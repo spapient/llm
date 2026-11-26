@@ -3,7 +3,7 @@
 use super::*;
 use testkit::ScratchDir;
 
-#[test]
+testkit::test_cases! {
 fn maps_file_bytes_and_length() {
     let dir = ScratchDir::new("mmap-bytes");
     let path = dir.join("payload.bin");
@@ -16,7 +16,6 @@ fn maps_file_bytes_and_length() {
     assert_eq!(map.as_ref(), payload.as_slice());
 }
 
-#[test]
 fn an_empty_file_maps_to_empty() {
     let dir = ScratchDir::new("mmap-empty");
     let path = dir.join("empty.bin");
@@ -26,8 +25,8 @@ fn an_empty_file_maps_to_empty() {
     assert_eq!(map.as_slice(), b"");
 }
 
-#[test]
 fn a_missing_file_is_an_error() {
     let map = Mmap::open(Path::new("/nonexistent/path/llm_mmap_no_such_file"));
     assert!(map.is_err());
+}
 }

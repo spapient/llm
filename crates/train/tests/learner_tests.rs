@@ -93,8 +93,8 @@ fn run_metric_batch(
     Ok(learner)
 }
 
+testkit::test_cases! {
 /// 跑一个对齐批次：标签取后继 token，argmax 命中标签，看板记一条接近 0 的 loss。
-#[test]
 fn learner_runs_a_batch_and_records_metrics() -> Result<()> {
     let (tape, sizes, p, x, logits, loss) = fixture();
     let tokens = [0u32, 1];
@@ -128,7 +128,6 @@ fn learner_runs_a_batch_and_records_metrics() -> Result<()> {
 }
 
 /// logits 元素数与「有效位置 × 词表」不符时，编排器在入账前拒绝，不带错值进优化步。
-#[test]
 fn rejects_mismatched_logits_geometry() -> Result<()> {
     let (tape, sizes, p, x, logits, loss) = fixture();
     let tokens = [0u32, 1];
@@ -152,7 +151,6 @@ fn rejects_mismatched_logits_geometry() -> Result<()> {
 }
 
 /// 一批一条指标：两个 micro-batch 各入账一条，窗口 1 下各步进一次。
-#[test]
 fn records_one_metric_per_batch_across_epochs() -> Result<()> {
     let (tape, sizes, p, x, logits, loss) = fixture();
     let tokens = [0u32, 1, 0, 1];
@@ -173,7 +171,6 @@ fn records_one_metric_per_batch_across_epochs() -> Result<()> {
 }
 
 /// 单列批没有后继可预测位置：入账前拒绝，看板不写入。
-#[test]
 fn rejects_single_column_with_no_successor() -> Result<()> {
     let (tape, sizes, p, x, logits, loss) = fixture();
     let tokens = [5u32];
@@ -195,7 +192,6 @@ fn rejects_single_column_with_no_successor() -> Result<()> {
 }
 
 /// 验证集独立循环：只前向评估入账，不回传梯度、不步进优化器，也不污染训练指标序列。
-#[test]
 fn evaluate_runs_a_validation_pass_without_gradients_or_steps() -> Result<()> {
     let (tape, sizes, p, x, logits, loss) = fixture();
     let train_tokens = [0u32, 1];
@@ -235,7 +231,6 @@ fn evaluate_runs_a_validation_pass_without_gradients_or_steps() -> Result<()> {
 }
 
 /// 前向闭包失败时错误原样透传，未入账任何指标。
-#[test]
 fn forwards_forward_closure_error_without_recording() -> Result<()> {
     let (tape, sizes, p, _x, _logits, _loss) = fixture();
     let tokens = [0u32, 1];
@@ -257,7 +252,6 @@ fn forwards_forward_closure_error_without_recording() -> Result<()> {
 }
 
 /// 蒸馏度量：`ForwardOut.metric` 带 teacher 时看板记蒸馏损失（含 KL），命中仍按硬标签。
-#[test]
 fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
     let (mut tape, mut sizes, p, x, logits, loss) = fixture();
     let teacher = tape.leaf();
@@ -278,7 +272,6 @@ fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
 }
 
 /// RL 度量：GRPO 组合损失入账，命中恒 0（RL 无分类命中）。
-#[test]
 fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
     let (mut tape, mut sizes, p, x, logits, loss) = fixture();
     let (new_logp, old_logp, advantages, ref_kl) =
@@ -307,6 +300,7 @@ fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
     assert_eq!(point.correct, 0, "RL 度量无分类命中");
     Ok(())
 }
+}
 
 /// 学习率调度：warmup 后按曲线衰减到零。
 mod schedule {
@@ -314,7 +308,7 @@ mod schedule {
 
     use diagnostic::Code;
 
-    #[test]
+    testkit::test_cases! {
     fn the_schedule_warms_up_then_decays_to_zero() {
         let schedule = Schedule::new(10, 100).expect("合法");
         assert_eq!(schedule.lr(1.0, 0), 0.1);
@@ -327,7 +321,6 @@ mod schedule {
         assert_eq!(schedule.lr(1.0, 1_000), 0.0);
     }
 
-    #[test]
     fn a_schedule_without_warmup_starts_at_the_peak() {
         let schedule = Schedule::new(0, 10).expect("合法");
         assert_eq!(schedule.lr(0.5, 0), 0.5);
@@ -337,7 +330,6 @@ mod schedule {
         );
     }
 
-    #[test]
     fn an_impossible_schedule_is_rejected() {
         assert_eq!(Schedule::new(0, 0).unwrap_err().code(), Code::Invalid);
         assert_eq!(Schedule::new(11, 10).unwrap_err().code(), Code::Invalid);
@@ -349,7 +341,6 @@ mod schedule {
         );
     }
 
-    #[test]
     fn cosine_decays_from_the_peak_to_the_floor_ratio() {
         let schedule = Schedule::with(0, 100, Anneal::Cosine, 0.1).expect("合法");
         assert_eq!(schedule.lr(1.0, 0), 1.0, "进度起点在峰值");
@@ -358,19 +349,18 @@ mod schedule {
         assert_eq!(schedule.lr(1.0, 100), 0.0, "超出总步数为 0");
     }
 
-    #[test]
     fn a_constant_schedule_holds_the_peak_after_warmup() {
         let schedule = Schedule::with(10, 100, Anneal::Constant, 0.1).expect("合法");
         assert_eq!(schedule.lr(1.0, 9), 1.0, "warmup 结束到峰值");
         assert_eq!(schedule.lr(1.0, 50), 1.0, "恒定曲线不向下限压");
     }
 
-    #[test]
     fn linear_decay_respects_the_floor_ratio() {
         let schedule = Schedule::with(0, 100, Anneal::Linear, 0.2).expect("合法");
         let floor = schedule.lr(1.0, 99);
         assert!(floor >= 0.2 - 1e-6, "线性谷底不低于下限：{floor}");
         assert!(floor <= 1.0, "学习率不超过峰值：{floor}");
+    }
     }
 }
 
@@ -379,8 +369,8 @@ mod metrics {
     use crate::{MetricPoint, MetricsBoard};
     use diagnostic::{Code, Result};
 
+    testkit::test_cases! {
     /// 加权聚合：loss 与命中率按样本数加权，best 取各步最低。
-    #[test]
     fn aggregates_weighted_by_sample_count() -> Result<()> {
         let mut board = MetricsBoard::new();
         board.record(MetricPoint {
@@ -409,7 +399,6 @@ mod metrics {
     }
 
     /// 空看板：聚合量与最新点都是 `None`，渲染占位行。
-    #[test]
     fn empty_board_reports_nothing() {
         let board = MetricsBoard::new();
         assert!(board.is_empty());
@@ -421,7 +410,6 @@ mod metrics {
     }
 
     /// 非法点入账前拒绝：样本为 0、loss 非有限、命中条数超过样本数。
-    #[test]
     fn rejects_invalid_points() {
         let mut board = MetricsBoard::new();
 
@@ -464,7 +452,6 @@ mod metrics {
     }
 
     /// 渲染行带出最新步的 loss、命中率与样本数。
-    #[test]
     fn render_shows_latest_metrics() -> Result<()> {
         let mut board = MetricsBoard::new();
         board.record(MetricPoint {
@@ -482,7 +469,6 @@ mod metrics {
     }
 
     /// 样本数不等时，大批次对均值的贡献更大：micro 加权而非步均值。
-    #[test]
     fn weights_by_larger_batch_not_by_step_count() -> Result<()> {
         let mut board = MetricsBoard::new();
         // 小批 2 样本：loss 1.0、全对；大批 4 样本：loss 3.0、全错。
@@ -514,7 +500,6 @@ mod metrics {
     }
 
     /// 指标点按入账顺序留存，`points` 不重排。
-    #[test]
     fn points_preserve_record_order() -> Result<()> {
         let mut board = MetricsBoard::new();
         board.record(MetricPoint {
@@ -532,5 +517,6 @@ mod metrics {
         let steps: Vec<u64> = board.points().iter().map(|point| point.step).collect();
         assert_eq!(steps, [5, 2], "按入账顺序保留，不按步号重排");
         Ok(())
+    }
     }
 }

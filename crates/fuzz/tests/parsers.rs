@@ -38,7 +38,7 @@ fn entries() -> [drivers::Entry; 15] {
     drivers::registry()
 }
 
-#[test]
+testkit::test_cases! {
 fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
     for entry in entries() {
         let seed = Seed::new(entry.seed);
@@ -50,7 +50,6 @@ fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
 
 /// 种子本身必须是**被接受**的：否则整个遍历只是在错误路径上打转，
 /// "合法输入也只许有一种结论"这条就没人验。
-#[test]
 fn every_seed_is_a_valid_input() {
     for entry in entries() {
         assert!(
@@ -63,7 +62,6 @@ fn every_seed_is_a_valid_input() {
 }
 
 /// 登记表自身的完整性：目标名非空且唯一，防止复制粘贴时漏配或重复。
-#[test]
 fn registry_names_are_unique_and_nonempty() {
     let names: Vec<&str> = drivers::registry()
         .iter()
@@ -74,4 +72,5 @@ fn registry_names_are_unique_and_nonempty() {
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(unique.len(), names.len(), "目标名重复：{names:?}");
+}
 }

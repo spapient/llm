@@ -93,14 +93,14 @@ mod tests {
     use super::*;
     use crate::model::DType;
 
-    #[test]
+    #[cfg(test)]
+    testkit::test_cases! {
     fn registered_f32_families_supported() {
         for skeleton in [Skeleton::Elementwise, Skeleton::Reduce, Skeleton::Gemm] {
             assert!(supports(skeleton, DType::F32), "{skeleton:?}×f32 应在表内");
         }
     }
 
-    #[test]
     fn unknown_family_or_dtype_is_a_missing_capability() {
         // Scan 族与低比特档尚未核通实现覆盖，不登记为能力。
         assert!(!supports(Skeleton::Scan, DType::F32), "scan 族尚未登记");
@@ -110,7 +110,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn table_keys_stay_within_the_skeleton_closed_set() {
         for cap in CAPABILITIES {
             assert!(
@@ -121,7 +120,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn geometry_seed_keys_stay_within_the_closed_set() {
         for seed in GEOMETRY_SEEDS {
             assert!(
@@ -132,7 +130,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn landed_families_have_a_default_seed_scan_does_not() {
         for skeleton in [Skeleton::Elementwise, Skeleton::Reduce, Skeleton::Gemm] {
             assert!(
@@ -144,6 +141,7 @@ mod tests {
             geometry_seed(Skeleton::Scan).is_none(),
             "Scan 族尚未落地，不登记占位几何"
         );
+    }
     }
 }
 

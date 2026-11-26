@@ -542,8 +542,9 @@ mod compare_tests {
         },
     }, |case: fn()| case());
 
+    #[cfg(test)]
+    crate::test_cases! {
     /// 对称分母与参考侧分母不可互换；这条钉住二者的语义差异。
-    #[test]
     #[should_panic(expected = "容差")]
     fn the_asymmetric_relative_budget_is_stricter_than_the_symmetric_one() {
         let (got, want, abs, rel) = (1.5f32, 1.0f32, 0.0f32, 0.4f32);
@@ -551,7 +552,6 @@ mod compare_tests {
         assert_close(&[got], &[want], abs, rel);
     }
 
-    #[test]
     fn max_rel_err_uses_a_single_global_denominator() {
         assert_eq!(max_rel_err(&[1.0, 2.0], &[1.0, 2.0]), 0.0);
         let err = max_rel_err(&[1.0, 2.1], &[1.0, 2.0]);
@@ -560,7 +560,6 @@ mod compare_tests {
         assert!(!within_rel(&[1.0, 2.5], &[1.0, 2.0], 1e-5));
     }
 
-    #[test]
     fn max_rel_err_is_infinity_on_mismatched_lengths_or_nonfinite_mismatch() {
         assert_eq!(max_rel_err(&[1.0], &[1.0, 1.0]), f64::INFINITY);
         assert_eq!(max_rel_err(&[f32::NAN], &[0.0]), f64::INFINITY);
@@ -571,7 +570,6 @@ mod compare_tests {
         );
     }
 
-    #[test]
     fn max_rel_err_matches_nan_and_same_infinity() {
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let pair = [value];
@@ -587,13 +585,11 @@ mod compare_tests {
         }
     }
 
-    #[test]
     fn max_rel_err_falls_back_to_absolute_when_reference_is_zero() {
         assert_eq!(max_rel_err(&[0.0, 0.0], &[0.0, 0.0]), 0.0);
         assert_eq!(max_rel_err(&[0.0, 2.0], &[0.0, 0.0]), 2.0);
     }
 
-    #[test]
     fn rel_err_locates_the_worst_element() {
         let report = rel_err(&[1.0, 2.1, 3.0], &[1.0, 2.0, 3.0]);
         assert!(!report.mismatched);
@@ -611,7 +607,6 @@ mod compare_tests {
         );
     }
 
-    #[test]
     fn rel_err_is_zero_and_unlocated_when_the_batches_match() {
         let report = rel_err(&[1.0, 2.0], &[1.0, 2.0]);
         assert_eq!((report.err, report.mismatched), (0.0, false));
@@ -619,7 +614,6 @@ mod compare_tests {
         assert_eq!(rel_err(&[], &[]).ratio(), 0.0, "空批视为对上");
     }
 
-    #[test]
     fn rel_err_flags_length_and_nonfinite_breaks() {
         let short = rel_err(&[1.0], &[1.0, 1.0]);
         assert!(short.mismatched);
@@ -633,28 +627,25 @@ mod compare_tests {
         assert!(!rel_err(&[f32::INFINITY], &[f32::INFINITY]).mismatched);
     }
 
-    #[test]
     fn assert_within_rel_passes_inside_the_tolerance() {
         assert_within_rel(&[1.0, 2.0], &[1.0, 2.0], 0.0, "同一批数");
         assert_within_rel(&[1.0, 2.0], &[1.0, 2.000_004], 1e-5, "误差在阈值内");
     }
 
-    #[test]
     #[should_panic(expected = "第 1 个元素 got=2.5 want=2")]
     fn assert_within_rel_names_the_offending_element() {
         assert_within_rel(&[1.0, 2.5], &[1.0, 2.0], 1e-3, "GEMM");
     }
 
-    #[test]
     #[should_panic(expected = "长度不同")]
     fn assert_within_rel_reports_a_length_mismatch() {
         assert_within_rel(&[1.0], &[1.0, 2.0], 1e-3, "行批");
     }
 
-    #[test]
     #[should_panic(expected = "第 0 个元素非有限值不一致")]
     fn assert_within_rel_reports_a_nonfinite_break() {
         assert_within_rel(&[f32::NAN], &[1.0], 1e-3, "注意力");
+    }
     }
 
     /// 同一份静态样本矩阵驱动所有交叉对拍，避免每条判据各建一份语料。
@@ -681,7 +672,8 @@ mod compare_tests {
         }
     }
 
-    #[test]
+    #[cfg(test)]
+    crate::test_cases! {
     fn the_two_oracles_agree_bit_for_bit() {
         for_each_sample(|got, want, left, right| {
             assert_eq!(
@@ -696,7 +688,6 @@ mod compare_tests {
         });
     }
 
-    #[test]
     fn the_tolerance_ladder_is_shared_not_copied() {
         for_each_sample(|got, want, left, right| {
             for dtype in [DType::F32, DType::F64, DType::I8, DType::I4] {
@@ -709,7 +700,6 @@ mod compare_tests {
         });
     }
 
-    #[test]
     fn the_worst_element_attains_the_reported_error() {
         let report = rel_err(&[1.0, 2.5, -3.0, 4.0], &[1.0, 2.0, 3.0, 4.0]);
         let at = report.worst.expect("有偏差就有最差点");
@@ -719,7 +709,6 @@ mod compare_tests {
         assert_eq!(report.scale, 4.0);
     }
 
-    #[test]
     fn the_two_denominators_differ_only_in_the_floor() {
         let (got, want) = ([0.00011, 0.0002], [0.0001, 0.0002]);
         let batch = rel_err(&got, &want);
@@ -734,6 +723,7 @@ mod compare_tests {
         assert!(
             rel_err_with(&got, &want, Scale::Unit).ratio() > rel_err(&got, &want).ratio() * 10.0
         );
+    }
     }
 
     crate::test_cases!(gates {
@@ -849,20 +839,19 @@ fn len_scalar<T: Float>(len: usize) -> T {
 mod reference_math_tests {
     use super::{dot, mean, variance};
 
-    #[test]
+    #[cfg(test)]
+    crate::test_cases! {
     fn dot_accumulates_pairwise_products() {
         assert_eq!(dot(&[1.0f32, 2.0, 3.0], &[4.0, 5.0, 6.0]), 32.0);
         assert_eq!(dot(&[0.5f64, -1.0], &[2.0, 3.0]), -2.0);
         assert_eq!(dot::<f32>(&[], &[]), 0.0, "空向量点积为零");
     }
 
-    #[test]
     #[should_panic(expected = "长度不同")]
     fn dot_rejects_mismatched_lengths() {
         let _ = dot(&[1.0f32], &[1.0, 2.0]);
     }
 
-    #[test]
     fn mean_and_variance_match_the_textbook_formulas() {
         let values = [1.0f64, 2.0, 3.0, 4.0];
         let mu = mean(&values);
@@ -870,5 +859,6 @@ mod reference_math_tests {
         assert_eq!(variance(&values, mu), 1.25);
         assert_eq!(mean::<f64>(&[]), 0.0);
         assert_eq!(variance::<f64>(&[], 0.0), 0.0);
+    }
     }
 }

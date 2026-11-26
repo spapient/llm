@@ -31,7 +31,7 @@ fn attention_matches_central_differences() -> Result<()> {
         q0,
         k0,
         v0,
-        |q, k, v| attention_loss(q, k, v, s, s, d),
+        |q, k, v| attention_loss(q, k, v, s, s, d, d),
     )
 }
 
@@ -50,7 +50,7 @@ fn latent_attention_matches_central_differences() -> Result<()> {
         q0,
         k0,
         v0,
-        |q, k, v| latent_loss(q, k, v, rows, hist, w, dc),
+        |q, k, v| attention_loss(q, k, v, rows, hist, w, dc),
     )
 }
 
@@ -69,7 +69,7 @@ fn decode_attention_matches_central_differences() -> Result<()> {
         q0,
         k0,
         v0,
-        |q, k, v| attention_loss(q, k, v, q_rows, hist, d),
+        |q, k, v| attention_loss(q, k, v, q_rows, hist, d, d),
     )
 }
 

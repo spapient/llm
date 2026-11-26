@@ -1,7 +1,7 @@
 use super::*;
 
+testkit::test_cases! {
 /// `loss = reduce_sum(mul(p, w))`：d loss/d p[i] = w[i]，乘法与归约两段链式回传。
-#[test]
 fn mul_then_reduce_matches_central_differences() -> Result<()> {
     let p0 = vec![0.3_f32, -0.5, 0.8];
     let w0 = vec![1.0_f32, -0.2, 0.6];
@@ -18,7 +18,6 @@ fn mul_then_reduce_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_sum(silu(scale(p)))`：缩放与 SiLU 激活两段链式对拍。
-#[test]
 fn scale_silu_chain_matches_central_differences() -> Result<()> {
     let mut tape = Tape::new();
     let p = tape.parameter();
@@ -47,7 +46,6 @@ fn scale_silu_chain_matches_central_differences() -> Result<()> {
 }
 
 /// 图外常量叶子不收梯度：add(p, x) 中 x 是 detached 叶子，梯度槽保持空；参数 p 收到上游 1。
-#[test]
 fn detached_leaf_receives_no_gradient() -> Result<()> {
     let (tape, sizes, p, x, loss) = support::add_graph(N);
 
@@ -71,7 +69,6 @@ fn detached_leaf_receives_no_gradient() -> Result<()> {
 }
 
 /// `loss = reduce_sum(gelu(p))`：GELU 导数（正态密度 + 乘 Φ）逐元素对拍。
-#[test]
 fn gelu_chain_matches_central_differences() -> Result<()> {
     let p0 = vec![-1.2_f32, 0.4, 1.1];
     let (mut session, vars, h, loss) = parameter_session("gelu_f32", &[&p0], N, None)?;
@@ -91,7 +88,6 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_max(p)`：最大值元素收到上游 1，其余为 0；中心差分核对梯度口径。
-#[test]
 fn reduce_max_matches_central_differences() -> Result<()> {
     let p0 = vec![-0.7_f32, 1.3, 0.2];
     let (mut session, vars, h, loss) = parameter_session("reduce_max_f32", &[&p0], 1, None)?;
@@ -106,7 +102,6 @@ fn reduce_max_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_sum(gemv(x, w))`：权重在前、常量输入在后。
-#[test]
 fn gemv_matches_central_differences() -> Result<()> {
     let (rows, cols) = (2, 3);
     let w0: Vec<f32> = (0..rows * cols).map(|i| 0.1 * i as f32 - 0.5).collect();
@@ -128,7 +123,6 @@ fn gemv_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_sum(gemm(a, b))`：收缩轴固定 `nn::gemm::K`，对拍 `dA` / `dB`。
-#[test]
 fn gemm_matches_central_differences() -> Result<()> {
     let (k, m, n) = (nn::gemm::K, 1, 2);
     let a0: Vec<f32> = (0..m * k).map(|i| 0.1 * i as f32 - 0.3).collect();
@@ -153,7 +147,6 @@ fn gemm_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_sum(embed(idx, table))`：被访问行累加，未访问行保持 0。
-#[test]
 fn embed_table_gradient_matches_central_differences() -> Result<()> {
     let (tokens, dim, rows) = (2, 2, 3);
     let table0: Vec<f32> = (0..rows * dim).map(|i| 0.2 * i as f32 - 0.6).collect();
@@ -184,7 +177,6 @@ fn embed_table_gradient_matches_central_differences() -> Result<()> {
 
 /// 不可微算子在回传时显式报 [`Code::Unsupported`]，不静默忽略。反量化是推理期解码，
 /// 权重/码值无训练梯度，因此不登记反向公式。
-#[test]
 fn unsupported_operator_backward_is_rejected() -> Result<()> {
     let mut tape = Tape::new();
     let p = tape.parameter();
@@ -207,7 +199,6 @@ fn unsupported_operator_backward_is_rejected() -> Result<()> {
 ///
 /// 这是「损失层从纯函数升级为图上可训练」的闭环证据：五个算子串成一条链，
 /// 整链梯度等于解析梯度，而不只是各算子单独可微。
-#[test]
 fn distillation_kl_graph_matches_central_differences() -> Result<()> {
     let mut tape = Tape::new();
     let s = tape.parameter();
@@ -260,7 +251,6 @@ fn distillation_kl_graph_matches_central_differences() -> Result<()> {
 ///
 /// 夹具三个元素各走一路：裁上界（ratio>1+ε, A>0）、裁下界（ratio<1−ε, A<0）、不裁
 /// （ratio 在界内）。裁断处梯度为 0（clamp 平坦），不裁处梯度沿 ratio 回传。
-#[test]
 fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
     let eps: f32 = 0.2;
     let lo: f32 = 1.0 - eps;
@@ -338,7 +328,6 @@ fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_sum(leaky_relu(p))`：正区梯度 1、负区梯度 slope，逐元素对拍。
-#[test]
 fn leaky_relu_chain_matches_central_differences() -> Result<()> {
     let mut tape = Tape::new();
     let p = tape.parameter();
@@ -370,7 +359,6 @@ fn leaky_relu_chain_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_sum(hard_sigmoid(p))`：线性区梯度恒为 1/6；饱和点解析梯度为 0。
-#[test]
 fn hard_sigmoid_chain_matches_central_differences() -> Result<()> {
     let chain_loss = |params: &[f32]| {
         params
@@ -382,7 +370,6 @@ fn hard_sigmoid_chain_matches_central_differences() -> Result<()> {
 }
 
 /// 饱和点（|x| > 3）的解析梯度必须为 0，且不是差分近似能测得的小数。
-#[test]
 fn hard_sigmoid_is_flat_outside_the_linear_band() -> Result<()> {
     let p0 = [-4.0_f32, 0.0, 4.0];
     let grad = unary_grad("hard_sigmoid_f32", &p0, p0.len())?;
@@ -393,7 +380,6 @@ fn hard_sigmoid_is_flat_outside_the_linear_band() -> Result<()> {
 }
 
 /// `loss = reduce_sum(σ(p))`：闭式损失就是 σ 逐元素和，对拍 `σ·(1−σ)`。
-#[test]
 fn sigmoid_chain_matches_central_differences() -> Result<()> {
     let chain_loss = |params: &[f32]| {
         params
@@ -405,15 +391,14 @@ fn sigmoid_chain_matches_central_differences() -> Result<()> {
 }
 
 /// `loss = reduce_sum(tanh(p))`：对拍 `1 − tanh²`，负区点同时盯住导函数的偶对称。
-#[test]
 fn tanh_chain_matches_central_differences() -> Result<()> {
     let chain_loss = |params: &[f32]| params.iter().map(|&x| x.tanh()).sum::<f32>();
     check_unary_grad("tanh_f32", &[-1.3, 0.0, 0.9], chain_loss)
 }
 
 /// `loss = reduce_sum(relu(p))`：负区梯度必须**恰好** 0（不是 LeakyReLU 的 0.01），正区恰好 1。
-#[test]
 fn relu_chain_matches_central_differences() -> Result<()> {
     let chain_loss = |params: &[f32]| params.iter().map(|&x| x.max(0.0)).sum::<f32>();
     check_unary_grad("relu_f32", &[-1.3, 0.45, 0.9], chain_loss)
+}
 }

@@ -39,8 +39,8 @@ kernel_smoke!(
     }
 );
 
+testkit::test_cases! {
 /// 行批投影：整块两行共享同一份权重，逐行 gemv 与串行参考逐行重算对拍。
-#[test]
 fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
     let (m, n) = (3, 2);
     let w: Vec<f32> = (0..m * n).map(|i| i as f32 * 0.5).collect();
@@ -64,7 +64,6 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
 
 /// 行批跨过微内核行块（`nn::fast::MIN_ROWS`）后换到 packed 入口：两侧各取一个批宽，否则这条分派
 /// 只有一侧被覆盖——2 行走按列 tile，`MIN_ROWS + 1` 行走 8×8 寄存器分块那条。
-#[test]
 fn gemv_row_batch_switches_to_the_packed_kernel_at_the_row_block() {
     let (m, n) = (5, 7);
     let w: Vec<f32> = (0..n * m).map(|i| (i % 9) as f32 * 0.25 - 1.0).collect();
@@ -87,7 +86,6 @@ fn gemv_row_batch_switches_to_the_packed_kernel_at_the_row_block() {
 }
 
 /// 行批几何不自洽：输入不是行宽整数倍时拒绝，不静默截位。
-#[test]
 fn gemv_row_batch_rejects_inconsistent_geometry() {
     let mut executor = cpu();
     bind(&mut executor, 0, &[1.0, 2.0]);
@@ -100,6 +98,7 @@ fn gemv_row_batch_rejects_inconsistent_geometry() {
     node.bind_output(output);
 
     assert!(executor.run(&node).is_err());
+}
 }
 
 // 4 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `nn` 参考对拍。
@@ -215,8 +214,8 @@ fn gemm_quant_matches_reference(
     assert_close(&produced, reference);
 }
 
+testkit::test_cases! {
 /// int4 矩阵乘：样本 A/B 为打包 nibble，与独立 `nn` 参考对拍。
-#[test]
 fn gemm_i4_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
     let sample = nn::gemm::sample::<nn::gemm_i4::GemmI4>(m, n);
@@ -229,7 +228,6 @@ fn gemm_i4_runs_through_the_registered_kernel() {
 }
 
 /// int8 矩阵乘：样本 A/B 为逐元素字节，与独立 `nn` 参考对拍。
-#[test]
 fn gemm_i8_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
     let sample = nn::gemm::sample::<nn::gemm_i8::GemmI8>(m, n);
@@ -242,7 +240,6 @@ fn gemm_i8_runs_through_the_registered_kernel() {
 }
 
 /// int2 矩阵乘：样本 A/B 为打包 2 位码，与独立 `nn` 参考对拍。
-#[test]
 fn gemm_i2_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
     let sample = nn::gemm::sample::<nn::gemm_i2::GemmI2>(m, n);
@@ -255,7 +252,6 @@ fn gemm_i2_runs_through_the_registered_kernel() {
 }
 
 /// 量化权重槽误绑成浮点缓冲：执行期形态核对给 `Invalid`，不静默按字节解释。
-#[test]
 fn a_quantized_weight_bound_as_f32_is_rejected_by_the_kernel() {
     let mut executor = cpu();
     bind(&mut executor, 0, &[1.0; 4]);
@@ -271,6 +267,7 @@ fn a_quantized_weight_bound_as_f32_is_rejected_by_the_kernel() {
 
     let error = executor.run(&node).expect_err("权重形态不符必须拒绝");
     assert_eq!(error.code(), Code::Invalid);
+}
 }
 
 kernel_smoke!(
@@ -292,7 +289,7 @@ kernel_smoke!(
     }
 );
 
-#[test]
+testkit::test_cases! {
 fn binary_elementwise_runs_through_the_registered_kernel() {
     let a = [1.0, 2.0];
     let b = [3.0, 4.0];
@@ -322,7 +319,6 @@ fn binary_elementwise_runs_through_the_registered_kernel() {
     assert_close(&residual, &residual_ref);
 }
 
-#[test]
 fn unary_elementwise_runs_through_the_registered_kernel() {
     let a = [-1.0, 0.0, 1.0, 2.0];
 
@@ -345,7 +341,6 @@ fn unary_elementwise_runs_through_the_registered_kernel() {
     assert_close(&scale, &scale_ref);
 }
 
-#[test]
 fn softmax_and_reduce_run_through_the_registered_kernel() {
     let x = [3.0, 1.0, 2.0];
 
@@ -369,7 +364,6 @@ fn softmax_and_reduce_run_through_the_registered_kernel() {
 }
 
 /// 注意力三路 q/k/v 经登记内核执行，朴素与 Flash 分别对拍同算子参考实现。
-#[test]
 fn attention_runs_through_the_registered_kernel() {
     let sample = nn::conv::attention::sample(2, 8);
     let q = sample.f32("q").expect("q");
@@ -408,7 +402,6 @@ fn attention_runs_through_the_registered_kernel() {
 }
 
 /// 图序就是执行序：第二个节点读到第一个节点写过的编号，参考路径串行重算同一结果。
-#[test]
 fn a_graph_chains_through_the_same_bindings() {
     let a = [1.0, 2.0];
     let b = [3.0, 4.0];
@@ -441,7 +434,6 @@ fn a_graph_chains_through_the_same_bindings() {
 }
 
 /// 表未覆盖的算子不登记；执行时按名拒绝，而不是静默走空入口。
-#[test]
 fn an_uncovered_operator_is_refused_by_name() {
     let mut executor = cpu();
     executor.bind(0, Buf::F32(vec![1.0, 2.0]));
@@ -454,7 +446,6 @@ fn an_uncovered_operator_is_refused_by_name() {
 }
 
 /// decode 两条注意力内核经登记表跑通：与独立 `nn` decode 参考对拍。
-#[test]
 fn decode_attention_kernels_match_the_reference() {
     let sample = nn::conv::decode_attention::sample(1, 8);
     let q = sample.f32("q").expect("q").to_vec();
@@ -497,7 +488,6 @@ fn decode_attention_kernels_match_the_reference() {
 }
 
 /// 空历史走 decode 内核：`check_rows` 报 `Invalid`，不带进执行期。
-#[test]
 fn an_empty_decode_history_is_rejected_by_the_kernel() {
     let d = 8;
     let mut executor = cpu();
@@ -519,7 +509,6 @@ fn an_empty_decode_history_is_rejected_by_the_kernel() {
     assert_eq!(error.code(), Code::Invalid);
 }
 
-#[test]
 fn a_row_batch_projection_equals_row_by_row_gemv() {
     // 权重 `[n, k]` = `[4, 5]`，3 行输入：多行走线性层分块核，必须与逐行点积同值。
     let (m, n, rows) = (5usize, 4usize, 3usize);
@@ -547,4 +536,5 @@ fn a_row_batch_projection_equals_row_by_row_gemv() {
     let mut reference = vec![0.0f32; n];
     nn::gemv_f32::forward(tensor::View::one(&x[..m]), &weights, &mut reference).expect("gemv");
     assert_eq!(single, reference, "decode 口径必须与 gemv 逐位一致");
+}
 }

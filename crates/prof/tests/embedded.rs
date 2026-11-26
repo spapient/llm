@@ -1,5 +1,5 @@
+testkit::test_cases! {
 /// 生成表按文件名升序（旧的 `prof::load(dir)` 也这样排序）。
-#[test]
 fn embedded_names_are_sorted() {
     let generated = crate::names();
     assert!(
@@ -12,7 +12,6 @@ fn embedded_names_are_sorted() {
 }
 
 /// 每份静态视图都有完整身份与非空能力供给；元素类型由 `ProvideView` 在编译期固定。
-#[test]
 fn every_embedded_entry_is_a_device_archive() {
     for name in crate::names() {
         let profile = crate::embedded(name).expect("名字都能取到档案");
@@ -22,12 +21,10 @@ fn every_embedded_entry_is_a_device_archive() {
     }
 }
 
-#[test]
 fn embedded_reports_a_missing_archive() {
     assert!(crate::embedded("no-such-device").is_none());
 }
 
-#[test]
 fn select_picks_the_profile_matching_local_arch() {
     let profiles = crate::prof::builtin_profiles().expect("内置档案");
     let detected = crate::prof::Detected::new().with("arch", std::env::consts::ARCH);
@@ -35,7 +32,6 @@ fn select_picks_the_profile_matching_local_arch() {
     assert_eq!(chosen.meta.vendor, "cpu");
 }
 
-#[test]
 fn select_reports_unsupported_when_nothing_matches() {
     let profiles = crate::prof::builtin_profiles().expect("内置档案");
     let detected = crate::prof::Detected::new().with("arch", "no-such-arch");
@@ -44,7 +40,6 @@ fn select_reports_unsupported_when_nothing_matches() {
 }
 
 /// 每个后端都实现完整算子矩阵，且只替换正文、不改变共享 ABI。
-#[test]
 fn every_device_kernel_matches_the_shared_operator_contract() {
     for vendor in crate::names() {
         let kernels = crate::catalogue::all_for(vendor);
@@ -79,7 +74,6 @@ fn every_device_kernel_matches_the_shared_operator_contract() {
 }
 
 /// 后端表按 `(vendor, op)` 严格升序，二分查找不会遇到重复键或乱序。
-#[test]
 fn device_templates_are_sorted_and_complete() {
     assert_eq!(
         crate::DEVICE_TEMPLATES.len(),
@@ -95,7 +89,6 @@ fn device_templates_are_sorted_and_complete() {
 }
 
 /// 发射选择真正读取后端调优结果；参考实现保持零拷贝，调优正文才拥有替换后的声明。
-#[test]
 fn device_specialization_selects_the_backend_without_changing_abi() {
     let op = crate::catalogue::named("add_f32")
         .expect("逐元素参考算子")
@@ -118,7 +111,6 @@ fn device_specialization_selects_the_backend_without_changing_abi() {
 }
 
 /// 未特化且未调优的算子在所有后端共享参考正文，克隆声明不会引入字符串分配。
-#[test]
 fn untuned_kernels_reuse_the_shared_reference_declaration() {
     let op = crate::catalogue::named("gemm_f32")
         .expect("未调优的参考算子")
@@ -134,7 +126,6 @@ fn untuned_kernels_reuse_the_shared_reference_declaration() {
 }
 
 /// 展开配置以模板 stem 为键：同模板算子共享策略，不同结构不会因声明继承而被误展开。
-#[test]
 fn unroll_configuration_follows_the_template_stem() {
     const HOT: &[&str] = &[
         "add_f32",
@@ -182,7 +173,6 @@ fn unroll_configuration_follows_the_template_stem() {
     }
 }
 
-#[test]
 fn native_template_marker_is_explicit_and_name_scoped() {
     for vendor in ["nvidia", "musa"] {
         let source = crate::catalogue::template_for(vendor, "matmul_f32").expect("原生矩阵乘");
@@ -195,7 +185,6 @@ fn native_template_marker_is_explicit_and_name_scoped() {
 
 /// MUSA 特化必须保持共享 ABI，并保留真实设备内核、分块同步与三侧边界守卫。
 /// 这里只检查源码契约；是否可由 mcc 编译及真机数值/性能由设备测试另行证明。
-#[test]
 fn musa_matmul_specialization_preserves_abi_and_device_contract() {
     let reference = crate::catalogue::named("matmul_f32")
         .expect("共享矩阵乘声明")
@@ -227,7 +216,6 @@ fn musa_matmul_specialization_preserves_abi_and_device_contract() {
 }
 
 /// NVIDIA 使用严格 FP32 cuBLAS，缓存按设备失效且并发安全；公开 ABI 仍与共享声明一致。
-#[test]
 fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
     let reference = crate::catalogue::named("matmul_f32")
         .expect("共享矩阵乘声明")
@@ -272,7 +260,6 @@ fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
 }
 
 /// A3000 是独立指纹与编译架构，但复用 NVIDIA 的 cuBLAS 正文和片段，不复制设备族语料。
-#[test]
 fn a3000_variant_selects_sm86_and_reuses_the_nvidia_backend() {
     let detected = crate::prof::Detected::new()
         .with("cc", "8.6")
@@ -312,7 +299,6 @@ fn a3000_variant_selects_sm86_and_reuses_the_nvidia_backend() {
 }
 
 /// FMA 首块／续算与独立标量参考一致，不在生产切换后自配对拍。
-#[test]
 fn gemm_micro_fma_matches_scalar_on_first_and_continuation() {
     #[cfg(target_arch = "x86_64")]
     println!(
@@ -347,7 +333,6 @@ fn gemm_micro_fma_matches_scalar_on_first_and_continuation() {
     }
 }
 
-#[test]
 fn gemm_micro_rejects_short_bufs_before_ffi_call() {
     let error =
         crate::runtime::gemm_micro::fma_micro(&[], &[0.0; 8], &mut [0.0; 64], (0, 0, 8, 1), true)
@@ -356,7 +341,6 @@ fn gemm_micro_rejects_short_bufs_before_ffi_call() {
 }
 
 /// dotprod 可用时 C 与独立标量参考逐位一致；不可用时公开面仍明确拒绝。
-#[test]
 fn gemm_micro_sdot_matches_scalar_exactly() {
     let k = 33;
     let a: Vec<i8> = (0..4 * k).map(|i| ((i * 17 + 3) % 31) as i8 - 15).collect();
@@ -396,7 +380,6 @@ fn gemm_micro_sdot_matches_scalar_exactly() {
 
 /// SME 短缓冲必须在 FFI 前拒绝；无 SME 的机器则明确返回未执行。
 #[cfg(target_arch = "aarch64")]
-#[test]
 fn gemm_micro_sme_rejects_short_bufs_before_ffi_call() {
     let result = crate::runtime::gemm_micro::sme_micro(&[], &[], &mut [], 64, 32);
     match result {
@@ -408,7 +391,6 @@ fn gemm_micro_sme_rejects_short_bufs_before_ffi_call() {
 
 /// SME 单瓦片对拍使用独立标量参考；无 SME 的环境不据此签发能力。
 #[cfg(target_arch = "aarch64")]
-#[test]
 fn gemm_micro_sme_matches_an_independent_scalar_reference() {
     let (k, n) = (32, 64);
     let a: Vec<f32> = (0..k * 16).map(|i| (i as f32 * 0.013).sin()).collect();
@@ -431,4 +413,5 @@ fn gemm_micro_sme_matches_an_independent_scalar_reference() {
             );
         }
     }
+}
 }

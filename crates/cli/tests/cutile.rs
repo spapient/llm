@@ -20,8 +20,8 @@ fn nvidia_present() -> bool {
         .is_some_and(shard::witness::device_available)
 }
 
+testkit::test_cases! {
 /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。
-#[test]
 fn the_performance_line_is_printed_even_when_nothing_was_measured() {
     let peak = shard::bench::Peak {
         value: 68.0e9,
@@ -58,7 +58,6 @@ fn the_performance_line_is_printed_even_when_nothing_was_measured() {
     assert!(!unknown.contains("门槛"), "{unknown}");
 }
 
-#[test]
 fn doctor_prints_every_stage() {
     let text = doctor(&settings(), "gemv_i4", "cpu", None).expect("doctor 应成功");
     assert!(text.contains("path: pipe2"), "{text}");
@@ -69,7 +68,6 @@ fn doctor_prints_every_stage() {
     assert!(text.contains("[配置]"), "{text}");
 }
 
-#[test]
 fn doctor_prints_the_capacity_next_to_the_declared_traffic() {
     // 打印的必须是档案容量（判定的分母）与声明用量（分子的来源），不是中转缓冲的字节数。
     let text = doctor(&settings(), "gemv_i4", "cpu", None).expect("doctor 应成功");
@@ -78,7 +76,6 @@ fn doctor_prints_the_capacity_next_to_the_declared_traffic() {
     assert!(text.contains("GM=main 容量 不限"), "{text}");
 }
 
-#[test]
 fn doctor_explains_a_rejected_device_without_failing() {
     if nvidia_present() {
         return; // nvidia 可执行时，缺设备被拒场景不成立
@@ -88,7 +85,6 @@ fn doctor_explains_a_rejected_device_without_failing() {
     assert!(text.contains("L2"), "{text}");
 }
 
-#[test]
 fn doctor_explains_the_key_it_just_wrote() {
     // `--why` 要回答的是“这份缓存为什么没命中”：同一份键只能说一致，不能编差异。
     let settings = settings();
@@ -104,7 +100,6 @@ fn doctor_explains_the_key_it_just_wrote() {
     assert!(text.contains("与本次构建的键一致"), "{text}");
 }
 
-#[test]
 fn doctor_explains_a_key_that_never_landed() {
     let text =
         doctor(&settings(), "gemv_i4", "cpu", Some("0000000000000000")).expect("doctor 应成功");
@@ -112,7 +107,6 @@ fn doctor_explains_a_key_that_never_landed() {
     assert!(text.contains("从未落盘"), "{text}");
 }
 
-#[test]
 fn doctor_reports_a_half_written_key_as_half_written() {
     // `doctor` 会先把本次的键补齐，所以“半截落盘”只能对另一个键观察到——
     // 那正是真实场景：另一个进程崩在 `put` 中间，留下 `meta.txt` 与 `source.tmp`。
@@ -138,7 +132,6 @@ fn doctor_reports_a_half_written_key_as_half_written() {
     let _ = std::fs::remove_dir_all(&half);
 }
 
-#[test]
 fn verify_reports_a_missing_device_as_a_failure() {
     if nvidia_present() {
         return; // nvidia 可执行时，缺设备即失败场景不成立
@@ -149,7 +142,6 @@ fn verify_reports_a_missing_device_as_a_failure() {
     assert!(error.to_string().contains("缺设备即失败"), "{error}");
 }
 
-#[test]
 fn the_ledger_lists_every_declared_primitive() {
     let catalogue = Catalogue::load(&settings().dirs()).expect("内置数据");
     let profile = catalogue.resolve("cpu").expect("cpu 档案");
@@ -188,7 +180,6 @@ fn the_ledger_lists_every_declared_primitive() {
 
 /// `cache gc` 的上限来源：`--limit` 最高，其次是配置键 `cache.limit_bytes`，内核常量
 /// 只在两者都缺时兜底；默认值与内核缺省同值（行为不变）。
-#[test]
 fn cache_gc_prefers_the_flag_then_the_settings_key() {
     let roots = llm_cli::settings::Roots::new(
         std::env::temp_dir().join(format!("cutile-gc-settings-{}", std::process::id())),
@@ -224,4 +215,5 @@ fn cache_gc_prefers_the_flag_then_the_settings_key() {
         )),
         "{text}"
     );
+}
 }

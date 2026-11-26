@@ -4,7 +4,7 @@ mod clamp {
     mod tests {
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn clamp_matches_the_scalar_reference() {
     let sample = sample(128, 1);
     let expected = reference(&sample).expect("参考可计算");
@@ -19,7 +19,6 @@ fn clamp_matches_the_scalar_reference() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn clamp_rejects_length_mismatch() {
     let mut out = vec![0.0; 3];
     assert!(
@@ -29,7 +28,6 @@ fn clamp_rejects_length_mismatch() {
 }
 
 /// 标量界负例：下界大于上界、任一界非有限，都在裁剪前拦下。
-#[test]
 fn clamp_rejects_illegal_bounds() {
     let x = [1.0f32, 2.0];
     let mut out = [0.0; 2];
@@ -49,7 +47,6 @@ fn clamp_rejects_illegal_bounds() {
 }
 
 /// 饱和与重复边界：越界值被裁到界内，极值结果有限且与参考一致。
-#[test]
 fn clamp_keeps_values_in_bounds_on_saturated_inputs() {
     let cases: &[&[f32]] = &[
         &[-3.0, 0.0, 3.0],
@@ -70,6 +67,7 @@ fn clamp_keeps_values_in_bounds_on_saturated_inputs() {
         assert_eq!(out, expected, "用例 {idx} 与参考一致");
     }
 }
+}
 
     }
 }
@@ -80,7 +78,7 @@ mod embed {
     mod tests {
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn embed_matches_the_row_reference() {
     let sample = sample(6, 4);
     let expected = reference(&sample).expect("参考可计算");
@@ -94,7 +92,6 @@ fn embed_matches_the_row_reference() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn embed_rejects_an_out_of_range_idx() {
     let sample = sample(4, 3);
     let table = sample.f32("table").expect("table");
@@ -111,7 +108,6 @@ fn embed_rejects_an_out_of_range_idx() {
     );
 }
 
-#[test]
 fn embed_rejects_a_table_wrong_length() {
     let sample = sample(4, 3);
     let idx = sample.f32("idx").expect("idx");
@@ -129,7 +125,6 @@ fn embed_rejects_a_table_wrong_length() {
 }
 
 /// 退化与重复边界：空索引拒绝；行重复取值时逐行 gather 与参考一致。
-#[test]
 fn embed_handles_empty_and_repeated_idxs() {
     let sample = sample(4, 3);
     let table = sample.f32("table").expect("table");
@@ -153,7 +148,6 @@ fn embed_handles_empty_and_repeated_idxs() {
 }
 
 
-#[test]
 fn embed_rejection_leaves_the_output_untouched() {
     let idx = [0.0, 2.0];
     let table = [1.0, 2.0, 3.0, 4.0];
@@ -169,6 +163,7 @@ fn embed_rejection_leaves_the_output_untouched() {
     );
     assert_eq!(output, [9.0; 4], "校验失败前不得写入第一行");
 }
+}
 
     }
 }
@@ -180,7 +175,7 @@ mod rmsnorm {
     mod tests {
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn rmsnorm_matches_the_scalar_reference() {
     let sample = sample(128, 1);
     let expected = reference(&sample).expect("参考可计算");
@@ -194,7 +189,6 @@ fn rmsnorm_matches_the_scalar_reference() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn rmsnorm_rejects_empty_input() {
     let mut out = vec![];
     assert!(
@@ -205,7 +199,6 @@ fn rmsnorm_rejects_empty_input() {
 }
 
 /// 三缓冲非对齐长度各自拒绝：x/gamma 不等、x/out 不等都不能静默截位。
-#[test]
 fn rmsnorm_rejects_each_mismatched_buf_length() {
     let mut out = vec![0.0; 3];
     assert!(
@@ -230,7 +223,6 @@ fn rmsnorm_rejects_each_mismatched_buf_length() {
 }
 
 /// 零范数（全零行）：分母由 `EPS` 托底，输出为零而不是除零；权重按原样乘回。
-#[test]
 fn rmsnorm_zero_row_is_guided_by_epsilon() {
     let x = vec![0.0; 4];
     let gamma = vec![0.5, 0.5, 0.5, 0.5];
@@ -245,7 +237,6 @@ fn rmsnorm_zero_row_is_guided_by_epsilon() {
 }
 
 /// 饱和与重复边界：大值、极值、重复元素行，结果有限且与参考一致。
-#[test]
 fn rmsnorm_saturating_and_repeated_inputs_match_reference() {
     let cases: &[&[f32]] = &[
         &[1.0, 1.0, 1.0],
@@ -288,7 +279,6 @@ fn rmsnorm_saturating_and_repeated_inputs_match_reference() {
     }
 }
 
-#[test]
 fn batch_normalizes_each_segment_independently() {
     let row_dim = 3;
     let batch = 2;
@@ -318,7 +308,6 @@ fn batch_normalizes_each_segment_independently() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn batch_one_entry_matches_the_single_row_kernel() {
     let x = vec![1.0, -2.0, 0.5, 3.0];
     let gamma = vec![0.7, 0.6, 0.8, 0.5];
@@ -340,7 +329,6 @@ fn batch_one_entry_matches_the_single_row_kernel() {
     assert_eq!(single, batch, "batch=1 必须与单行入口逐元素等价");
 }
 
-#[test]
 fn batch_rejects_bad_row_dimension_and_length() {
     let x = vec![1.0, 2.0, 3.0, 4.0];
     let gamma = vec![0.5; 2];
@@ -390,7 +378,6 @@ fn batch_rejects_bad_row_dimension_and_length() {
 }
 
 
-#[test]
 fn rmsnorm_epsilon_is_configurable_and_validated_before_writing() {
     let x = [3.0, 4.0];
     let gamma = [1.0, 1.0];
@@ -420,6 +407,7 @@ fn rmsnorm_epsilon_is_configurable_and_validated_before_writing() {
         assert_eq!(untouched, [7.0; 2], "非法 epsilon 不得留下半写状态");
     }
 }
+}
 
     }
 }
@@ -430,7 +418,7 @@ mod softmax {
     mod tests {
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn softmax_matches_the_scalar_reference_and_sums_to_one() {
     let sample = sample(128, 1);
     let expected = reference(&sample).expect("参考可计算");
@@ -441,7 +429,6 @@ fn softmax_matches_the_scalar_reference_and_sums_to_one() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn softmax_rejects_empty_input() {
     let mut out = vec![];
     assert!(
@@ -452,7 +439,6 @@ fn softmax_rejects_empty_input() {
 }
 
 /// 输入与输出长度不一致时拒绝；非对齐长度不静默截断。
-#[test]
 fn softmax_rejects_mismatched_output_length() {
     testkit::assert_rejects_length_mismatch(|input, out| {
         forward(tensor::View::one(input), out).is_err()
@@ -460,7 +446,6 @@ fn softmax_rejects_mismatched_output_length() {
 }
 
 /// 饱和与退化输入：全零、重复元素、同号大值与极值；每行仍归一化到 1 且不含 NaN/Inf。
-#[test]
 fn softmax_saturating_and_repeated_inputs_stay_normalized() {
     let cases: &[&[f32]] = &[
         &[0.0, 0.0, 0.0],
@@ -478,6 +463,7 @@ fn softmax_saturating_and_repeated_inputs_stay_normalized() {
         assert!((total - 1.0).abs() < 1e-5, "用例 {idx}：每行和为 1");
         assert!(out.iter().all(|v| v.is_finite()), "用例 {idx}：无 NaN/Inf");
     }
+}
 }
 
     }

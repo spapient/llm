@@ -66,17 +66,15 @@ fn assert_panic_propagates_and_pool_survives(stage: fn(&Job, usize), calc: fn(&J
     );
 }
 
-#[test]
+testkit::test_cases! {
 fn worker_stage_panic_propagates_and_pool_survives() {
     assert_panic_propagates_and_pool_survives(panic_in_worker, noop);
 }
 
-#[test]
 fn worker_calc_panic_propagates_and_pool_survives() {
     assert_panic_propagates_and_pool_survives(noop, panic_in_worker);
 }
 
-#[test]
 fn caller_panic_releases_workers_and_pool_survives() {
     assert_panic_propagates_and_pool_survives(panic_in_caller, noop);
 }
@@ -86,7 +84,6 @@ fn caller_panic_releases_workers_and_pool_survives() {
 /// 两个调用方同时要满池：后者必然睡在 `free_cv` 上，等前者归还。若唤醒丢失，它会一直睡到
 /// 下一次任务结束——单次任务下就是永久等待。用带超时的收信把「挂死」判成「失败」，不让
 /// 门禁被一个死锁拖住（这正是 `lease_free` 拿锁后重查位图要挡的那条路径）。
-#[test]
 fn concurrent_callers_do_not_miss_wakeups() {
     let p = build_pool(4);
     let live = p.live.load(Ordering::Acquire);
@@ -111,4 +108,5 @@ fn concurrent_callers_do_not_miss_wakeups() {
             "并发调用方在 20s 内未全部返回：唤醒丢失，等槽者卡在 condvar 上"
         );
     }
+}
 }

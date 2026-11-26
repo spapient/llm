@@ -36,7 +36,7 @@ fn write_dense_model(name: &str, layers: &[(&str, usize, usize)]) -> std::path::
     path
 }
 
-#[test]
+testkit::test_cases! {
 fn a_real_weight_file_runs_through_generated_kernels() {
     if shard::toolchain::detect().is_none() {
         // 没有 C 编译器就没有执行证据；这条用例在这里不成立，不是通过。
@@ -50,7 +50,6 @@ fn a_real_weight_file_runs_through_generated_kernels() {
     run(&path.display().to_string(), Some(input), Some("cpu")).expect("两层链应当跑通");
 }
 
-#[test]
 fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
     if shard::toolchain::detect().is_none() {
         return;
@@ -78,4 +77,5 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
         .collect();
     assert_eq!(executed.output, want, "真实权重算出来的数必须等于手算");
     assert_eq!(executed.max_rel_err, 0.0, "同一份舍入顺序应当逐位相等");
+}
 }

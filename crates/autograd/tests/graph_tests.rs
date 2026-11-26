@@ -1,7 +1,7 @@
 use super::Requirement::{Backward, Grad, None};
 use super::Role;
 
-#[test]
+testkit::test_cases! {
 fn only_two_none_inputs_merge_to_none() {
     let cases = [
         (None, None, None),
@@ -19,7 +19,6 @@ fn only_two_none_inputs_merge_to_none() {
     }
 }
 
-#[test]
 fn merging_is_commutative_and_idempotent() {
     for left in [None, Backward, Grad] {
         for right in [None, Backward, Grad] {
@@ -32,7 +31,6 @@ fn merging_is_commutative_and_idempotent() {
     }
 }
 
-#[test]
 fn role_is_derived_from_requirement_and_leaf_status() {
     let cases = [
         (None, true, Role::Constant),
@@ -57,7 +55,6 @@ fn role_is_derived_from_requirement_and_leaf_status() {
     );
 }
 
-#[test]
 fn the_predicates_partition_the_three_variants() {
     assert!(None.is_none() && !None.requires() && !None.is_endpoint());
     assert!(!Backward.is_none() && Backward.requires() && !Backward.is_endpoint());
@@ -66,4 +63,5 @@ fn the_predicates_partition_the_three_variants() {
         [None.name(), Backward.name(), Grad.name()],
         ["None", "Backward", "Grad"]
     );
+}
 }

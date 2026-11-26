@@ -35,8 +35,8 @@ fn rejects_invalid_overrides() {
     );
 }
 
+testkit::test_cases! {
 /// 可选覆盖：缺项取默认值、给出的字段生效；非法值仍走 [`TrainConfig::new`] 校验。
-#[test]
 fn overrides_fall_back_to_default_without_duplicating_constants() {
     let base = TrainConfig::default();
     let all_default = TrainConfig::with_overrides(TrainOverrides::default()).expect("缺省配置合法");
@@ -58,7 +58,6 @@ fn overrides_fall_back_to_default_without_duplicating_constants() {
 }
 
 /// 配置指纹稳定且覆盖调度、目标、数据采样、优化器类型与静态超参。
-#[test]
 fn train_spec_fingerprint_is_stable_and_field_sensitive() {
     let base = TrainSpec::default();
     let sgd = Sgd::new();
@@ -91,7 +90,6 @@ fn train_spec_fingerprint_is_stable_and_field_sensitive() {
 }
 
 /// 会话装配必须重验优化器配置，非法裁剪值不能变成 None。
-#[test]
 fn session_rejects_invalid_optimizer_configuration() {
     let (tape, sizes, ..) = super::fixture();
     let error = crate::Session::new(
@@ -104,6 +102,7 @@ fn session_rejects_invalid_optimizer_configuration() {
     .err()
     .expect("非法优化器配置");
     assert_eq!(error.code(), Code::Invalid);
+}
 }
 
 struct Reject;

@@ -26,8 +26,8 @@ fn jitter() -> Protocol {
     .expect("协议")
 }
 
+testkit::test_cases! {
 /// 同一协议下抖动为 0 的一列：区间退化成一个点，整段落在门槛内侧。
-#[test]
 fn a_steady_series_passes_the_jitter_gate() {
     let card = Card::judge(jitter(), harness("A800"), &[10.0; 40]).expect("判");
     assert_eq!(card.standing(), Standing::Pass);
@@ -36,7 +36,6 @@ fn a_steady_series_passes_the_jitter_gate() {
 }
 
 /// 抖动远超门槛的一列：区间整段越界，这一格记 FAIL 而不是 OPEN。
-#[test]
 fn a_series_beyond_the_gate_fails() {
     let mut samples = Vec::new();
     for _ in 0..20 {
@@ -51,7 +50,6 @@ fn a_series_beyond_the_gate_fails() {
 }
 
 /// 区间跨着门槛：样本还不足以把「过」与「不过」分开，只能记 OPEN。
-#[test]
 fn an_interval_across_the_gate_stays_open() {
     let protocol = Protocol::of(
         "E1",
@@ -70,7 +68,6 @@ fn an_interval_across_the_gate_stays_open() {
 }
 
 /// 样本不够时不判：摘要照记，结论只有一个 OPEN 理由，不写「达标」也不写「未达标」。
-#[test]
 fn too_few_samples_are_not_judged_at_all() {
     let card = Card::judge(jitter(), harness("A800"), &[10.0, 12.0, 11.0]).expect("判");
     assert_eq!(card.standing(), Standing::Open(Shortfall::Samples));
@@ -80,7 +77,6 @@ fn too_few_samples_are_not_judged_at_all() {
 }
 
 /// 闭集外的主机：样本再多也不是这份协议的证据。
-#[test]
 fn a_host_outside_the_closure_cannot_pass() {
     let protocol = jitter().with_hosts(&["A800", "RTX_3090", "T600"]);
     let card = Card::judge(protocol, harness("macos-aarch64"), &[10.0; 40]).expect("判");
@@ -88,14 +84,12 @@ fn a_host_outside_the_closure_cannot_pass() {
 }
 
 /// 闭集为空表示不设闭集：任何装置都按门槛判。
-#[test]
 fn an_empty_closure_admits_every_host() {
     let card = Card::judge(jitter(), harness("macos-aarch64"), &[10.0; 40]).expect("判");
     assert_eq!(card.standing(), Standing::Pass);
 }
 
 /// 均值为 0 的列上变异系数没有定义：填 0 会让「完全抖动」看起来像「完全稳定」。
-#[test]
 fn a_zero_mean_series_has_no_jitter_to_report() {
     let mut samples = Vec::new();
     for _ in 0..20 {
@@ -107,7 +101,6 @@ fn a_zero_mean_series_has_no_jitter_to_report() {
 }
 
 /// 空白列：一个样本都没有，既不摘要也不判。
-#[test]
 fn no_samples_report_no_summary() {
     let card = Card::judge(jitter(), harness("A800"), &[]).expect("判");
     assert_eq!(card.standing(), Standing::Open(Shortfall::Samples));
@@ -115,7 +108,6 @@ fn no_samples_report_no_summary() {
 }
 
 /// 非有限样本是采集坏了：报错，不许静默跳过。
-#[test]
 fn a_broken_sample_is_reported_as_such() {
     let err = Card::judge(jitter(), harness("A800"), &[1.0, f64::NAN]).unwrap_err();
     assert_eq!(err.code(), Code::Invalid);
@@ -123,7 +115,6 @@ fn a_broken_sample_is_reported_as_such() {
 }
 
 /// 重采样种子固定：同一份样本只会得到一份卡片，复核时能逐位对拍。
-#[test]
 fn the_same_samples_produce_the_same_interval() {
     let samples = [9.0, 11.0, 10.5, 9.4, 12.0, 10.1, 9.9, 10.8];
     let first = Card::judge(jitter(), harness("A800"), &samples).expect("判");
@@ -135,7 +126,6 @@ fn the_same_samples_produce_the_same_interval() {
 }
 
 /// 分位不许交叉：中位 ≤ 95 ≤ 99，区间下界 ≤ 上界。
-#[test]
 fn the_summary_never_contradicts_itself() {
     let samples: Vec<f64> = (1..=100).map(f64::from).collect();
     let tally = Tally::of(&samples, Statistic::Mean)
@@ -147,7 +137,6 @@ fn the_summary_never_contradicts_itself() {
 }
 
 /// 归档里结论与理由必须相邻：读者不该靠推断知道这次是 OPEN 还是 FAIL。
-#[test]
 fn the_archive_keeps_the_reason_next_to_the_verdict() {
     let open = Card::judge(jitter(), harness("A800"), &[10.0])
         .expect("判")
@@ -172,7 +161,6 @@ fn the_archive_keeps_the_reason_next_to_the_verdict() {
 }
 
 /// 短名是归档口径：改措辞属于破坏性改动。
-#[test]
 fn the_short_names_are_stable() {
     assert_eq!(Statistic::Mean.as_str(), "mean");
     assert_eq!(Statistic::Cv.as_str(), "cv");
@@ -190,7 +178,6 @@ fn the_short_names_are_stable() {
 }
 
 /// 构造期拒绝不可能成立的协议：空名、非有限门槛、下限 <2、置信水平越界。
-#[test]
 fn a_protocol_rejects_impossible_settings() {
     let empty = Protocol::of("", "ns", Statistic::Mean, Direction::Lower, 1.0).unwrap_err();
     assert_eq!(empty.code(), Code::Invalid);
@@ -198,6 +185,7 @@ fn a_protocol_rejects_impossible_settings() {
     assert_eq!(nan.code(), Code::Invalid);
     assert!(nan.message().contains("有限数"), "{}", nan.message());
     assert_eq!(jitter().with_least(1).unwrap_err().code(), Code::Invalid);
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +218,7 @@ fn bench_record(name: &str, backend: &str, geom: Geometry) -> Result<BenchRecord
     )
 }
 
-#[test]
+testkit::test_cases! {
 fn a_minimal_record_keeps_observed_and_roofline_optional() {
     let geom = bench_geometry(vec![4096, 4096], 1, "f32").expect("几何合法");
     let record = bench_record("gemv_f32", "cpu-reference", geom).expect("记录合法");
@@ -245,7 +233,6 @@ fn a_minimal_record_keeps_observed_and_roofline_optional() {
     assert!(record.peak_profile().peak_gflops().is_none());
 }
 
-#[test]
 fn observed_is_filled_only_when_measured() {
     let geom = bench_geometry(vec![4096], 1, "f32").expect("几何合法");
     let filled = bench_record("rope_f32", "cpu-reference", geom)
@@ -262,7 +249,6 @@ fn observed_is_filled_only_when_measured() {
     assert_eq!(nan.unwrap_err().code(), Code::Invalid);
 }
 
-#[test]
 fn empty_identity_and_invalid_geometry_are_rejected() {
     let cases: [(&str, &str, Result<Geometry>); 5] = [
         ("", "cpu-reference", bench_geometry(vec![4], 1, "f32")),
@@ -281,14 +267,12 @@ fn empty_identity_and_invalid_geometry_are_rejected() {
     }
 }
 
-#[test]
 fn invalid_geometry_itself_is_an_error() {
     assert!(bench_geometry(vec![], 1, "f32").is_err());
     assert!(bench_geometry(vec![4], 0, "f32").is_err());
     assert!(bench_geometry(vec![4], 1, "").is_err());
 }
 
-#[test]
 fn roofline_rejects_negative_or_nonfinite_peaks() {
     assert!(PeakProfile::new(Some(-1.0), None).is_err());
     assert!(PeakProfile::new(None, Some(f64::INFINITY)).is_err());
@@ -297,7 +281,6 @@ fn roofline_rejects_negative_or_nonfinite_peaks() {
     assert_eq!(ok.peak_gflops(), Some(512.0));
 }
 
-#[test]
 fn score_is_bandwidth_bound_below_the_ridge_point() {
     let profile = PeakProfile::new(Some(1000.0), Some(500.0)).expect("上界合法");
     let score = profile.score(0.25, 125.0).expect("打分合法");
@@ -306,7 +289,6 @@ fn score_is_bandwidth_bound_below_the_ridge_point() {
     assert_eq!(score.percent(), 50.0);
 }
 
-#[test]
 fn score_is_compute_bound_at_or_above_the_ridge_point() {
     let profile = PeakProfile::new(Some(1000.0), Some(500.0)).expect("上界合法");
     let score = profile.score(2.0, 250.0).expect("打分合法");
@@ -315,7 +297,6 @@ fn score_is_compute_bound_at_or_above_the_ridge_point() {
     assert_eq!(score.percent(), 50.0);
 }
 
-#[test]
 fn score_rejects_nonfinite_or_negative_inputs() {
     let profile = PeakProfile::new(Some(1000.0), Some(500.0)).expect("上界合法");
     assert!(profile.score(-0.25, 125.0).is_err());
@@ -323,7 +304,6 @@ fn score_rejects_nonfinite_or_negative_inputs() {
     assert!(profile.score(0.25, f64::INFINITY).is_err());
 }
 
-#[test]
 fn score_requires_both_peaks() {
     assert!(PeakProfile::default().score(0.25, 125.0).is_err());
     let no_flops = PeakProfile::new(Some(1000.0), None).expect("上界合法");
@@ -332,19 +312,18 @@ fn score_requires_both_peaks() {
     assert!(no_bw.score(0.25, 125.0).is_err());
 }
 
-#[test]
 fn bottleneck_short_names_are_stable() {
     assert_eq!(Bottleneck::Bandwidth.as_str(), "bandwidth");
     assert_eq!(Bottleneck::Compute.as_str(), "compute");
 }
 
-#[test]
 fn entry_kind_short_names_are_stable() {
     assert_eq!(EntryKind::Op.as_str(), "op");
     assert_eq!(EntryKind::Fused.as_str(), "fused");
     assert_eq!(EntryKind::Layer.as_str(), "layer");
     assert_eq!(EntryKind::Model.as_str(), "model");
     assert_eq!(EntryKind::Serving.as_str(), "serving");
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +338,7 @@ fn baseline() -> Baseline {
     .expect("基线")
 }
 
-#[test]
+testkit::test_cases! {
 fn a_higher_is_better_case_regresses_only_below_its_limit() {
     let baseline = baseline();
     assert_eq!(baseline.judge("tput", 98.0), Ok(Judgement::Pass));
@@ -374,7 +353,6 @@ fn a_higher_is_better_case_regresses_only_below_its_limit() {
     ));
 }
 
-#[test]
 fn a_lower_is_better_case_mirrors_the_comparison() {
     let baseline = baseline();
     assert_eq!(baseline.judge("latency", 52.0), Ok(Judgement::Pass));
@@ -388,7 +366,6 @@ fn a_lower_is_better_case_mirrors_the_comparison() {
     ));
 }
 
-#[test]
 fn a_non_finite_measurement_never_passes() {
     assert!(matches!(
         baseline().judge("tput", f64::NAN),
@@ -396,14 +373,12 @@ fn a_non_finite_measurement_never_passes() {
     ));
 }
 
-#[test]
 fn an_unknown_scenario_is_a_configuration_error() {
     let error = baseline().judge("missing", 1.0).expect_err("未知场景");
     assert_eq!(error.code(), Code::Missing);
     assert!(error.to_string().contains("tput"), "{error}");
 }
 
-#[test]
 fn impossible_cases_are_rejected() {
     assert_eq!(
         Case::new("x", 0.0, 5.0, RegDir::Higher).unwrap_err().code(),
@@ -425,7 +400,6 @@ fn impossible_cases_are_rejected() {
     );
 }
 
-#[test]
 fn judgements_and_directions_have_stable_names() {
     assert_eq!(RegDir::Higher.as_str(), "higher-is-better");
     assert_eq!(RegDir::Lower.as_str(), "lower-is-better");
@@ -440,7 +414,6 @@ fn judgements_and_directions_have_stable_names() {
     );
 }
 
-#[test]
 fn a_higher_is_better_interval_splits_inside_outside_and_straddle() {
     let case = Case::new("tput", 100.0, 5.0, RegDir::Higher).expect("场景");
     assert_eq!(
@@ -464,7 +437,6 @@ fn a_higher_is_better_interval_splits_inside_outside_and_straddle() {
     ));
 }
 
-#[test]
 fn a_lower_is_better_interval_mirrors_the_three_states() {
     let case = Case::new("latency", 50.0, 10.0, RegDir::Lower).expect("场景");
     assert_eq!(
@@ -488,7 +460,6 @@ fn a_lower_is_better_interval_mirrors_the_three_states() {
     ));
 }
 
-#[test]
 fn an_open_judgement_carries_no_effect_size() {
     let case = Case::new("tput", 100.0, 5.0, RegDir::Higher).expect("场景");
     let open = case.judge_interval(Estimate::interval(93.0, 96.0, 97.0).expect("区间"));
@@ -496,14 +467,12 @@ fn an_open_judgement_carries_no_effect_size() {
     assert!(open.effect().is_none());
 }
 
-#[test]
 fn drift_within_the_invisible_band_is_not_improved() {
     let case = Case::with_epsilon("tput", 100.0, 5.0, 2.0, RegDir::Higher).expect("场景");
     assert_eq!(case.judge(101.0), Judgement::Pass);
     assert!(matches!(case.judge(103.0), Judgement::Improved { .. }));
 }
 
-#[test]
 fn effect_size_is_positive_for_improvement_and_negative_for_regression() {
     let higher = Case::new("tput", 100.0, 5.0, RegDir::Higher).expect("场景");
     let lower = Case::new("latency", 50.0, 10.0, RegDir::Lower).expect("场景");
@@ -516,7 +485,6 @@ fn effect_size_is_positive_for_improvement_and_negative_for_regression() {
     assert!(improved.effect().expect("效应") > 0.0);
 }
 
-#[test]
 fn a_reversed_or_non_finite_interval_is_rejected() {
     assert_eq!(
         Estimate::interval(5.0, 3.0, 4.0).unwrap_err().code(),
@@ -528,14 +496,12 @@ fn a_reversed_or_non_finite_interval_is_rejected() {
     );
 }
 
-#[test]
 fn two_equivalent_measurements_agree() {
     let first = Estimate::interval(99.0, 100.0, 101.0).expect("区间");
     let second = Estimate::interval(98.0, 99.5, 101.0).expect("区间");
     assert!(self_check(&first, &second, 5.0).is_agree());
 }
 
-#[test]
 fn measurements_apart_beyond_the_band_disagree() {
     let first = Estimate::interval(95.0, 100.0, 105.0).expect("区间");
     let second = Estimate::interval(104.0, 110.0, 115.0).expect("区间");
@@ -544,7 +510,6 @@ fn measurements_apart_beyond_the_band_disagree() {
     assert!((ratio - 10.0 / 110.0).abs() < 1e-12);
 }
 
-#[test]
 fn disjoint_intervals_stay_open_straddle() {
     let first = Estimate::interval(90.0, 92.0, 94.0).expect("区间");
     let second = Estimate::interval(100.0, 102.0, 104.0).expect("区间");
@@ -557,7 +522,6 @@ fn disjoint_intervals_stay_open_straddle() {
     ));
 }
 
-#[test]
 fn a_non_positive_measurement_is_degenerate() {
     let zero = Estimate::point(0.0);
     let other = Estimate::point(100.0);
@@ -569,25 +533,24 @@ fn a_non_positive_measurement_is_degenerate() {
         }
     ));
 }
+}
 
 // ---------------------------------------------------------------------------
 // stats：闭式统计量
 // ---------------------------------------------------------------------------
 
-#[test]
+testkit::test_cases! {
 fn mean_and_sample_deviation_match_the_closed_form() {
     let samples = [1.0, 2.0, 3.0, 4.0, 5.0];
     assert_eq!(mean(&samples), 3.0);
     assert!((sd(&samples) - 2.5_f64.sqrt()).abs() < 1e-12);
 }
 
-#[test]
 fn a_single_sample_has_no_spread() {
     assert_eq!(sd(&[7.0]), 0.0);
     assert_eq!(mean(&[]), 0.0);
 }
 
-#[test]
 fn quantiles_are_nearest_rank_not_interpolated() {
     let sorted = [1.0, 2.0, 3.0, 4.0];
     assert_eq!(quantile(&sorted, 0.50), 2.0);
@@ -595,7 +558,6 @@ fn quantiles_are_nearest_rank_not_interpolated() {
     assert_eq!(quantile(&sorted, 0.0), 1.0, "下界夹住在最小秩");
 }
 
-#[test]
 fn resampling_is_reproducible() {
     let samples = [9.0, 11.0, 10.5, 9.4, 12.0, 10.1, 9.9, 10.8];
     let first = interval(&samples, |drawn| Some(mean(drawn)));
@@ -609,10 +571,10 @@ fn resampling_is_reproducible() {
     );
 }
 
-#[test]
 fn an_undefined_statistic_has_no_interval() {
     assert_eq!(interval(&[1.0, -1.0], |_| None), None);
     assert!(resample(&[], |_| Some(0.0)).is_empty());
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -625,19 +587,18 @@ fn quoted(text: &str) -> String {
     out
 }
 
-#[test]
+testkit::test_cases! {
 fn quotes_and_backslashes_are_escaped_and_unicode_passes_through() {
     assert_eq!(quoted("a\"b\\c"), "\"a\\\"b\\\\c\"");
     assert_eq!(quoted("延迟"), "\"延迟\"");
 }
 
-#[test]
 fn short_escapes_win_for_the_common_controls() {
     assert_eq!(quoted("a\nb\tc\rd"), "\"a\\nb\\tc\\rd\"");
 }
 
-#[test]
 fn other_controls_become_unicode_escapes() {
     assert_eq!(quoted("\u{7}"), "\"\\u0007\"");
     assert_eq!(quoted("\u{85}"), "\"\\u0085\"");
+}
 }

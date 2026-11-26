@@ -7,24 +7,9 @@ fn map_unary(op: UnaryFn) -> Kernel {
     Kernel::map(
         "unary",
         vec![
-            Parameter {
-                name: "input".to_string(),
-                ty: ValueType::Buf {
-                    element: ScalarType::F32,
-                    access: Access::Read,
-                },
-            },
-            Parameter {
-                name: "out".to_string(),
-                ty: ValueType::Buf {
-                    element: ScalarType::F32,
-                    access: Access::ReadWrite,
-                },
-            },
-            Parameter {
-                name: "extent".to_string(),
-                ty: ValueType::Scalar(ScalarType::Usize),
-            },
+            buf("input", Access::Read),
+            buf("out", Access::ReadWrite),
+            scalar("extent", ScalarType::Usize),
         ],
         "i",
         "extent",
@@ -36,8 +21,8 @@ fn map_unary(op: UnaryFn) -> Kernel {
     )
 }
 
+testkit::test_cases! {
 /// 一元闭集逐族发射成对应 `<math.h>` 库调用；表驱动遍历，新增算子只在闭集里登记一行。
-#[test]
 fn unary_ops_emit_their_math_libcalls() {
     let cases = [
         (UnaryFn::Abs, "fabsf"),
@@ -59,7 +44,6 @@ fn unary_ops_emit_their_math_libcalls() {
 }
 
 /// 一元组合子的子表达式必须算 `f32`：套在 `usize` 标量上在校验期就被打回。
-#[test]
 fn unary_rejects_non_f32_operand() {
     let mut kernel = map_unary(UnaryFn::Abs);
     kernel.write = Write::Map(Expr::Unary {
@@ -68,4 +52,5 @@ fn unary_rejects_non_f32_operand() {
     });
     let error = kernel.verify().expect_err("usize operand is rejected");
     assert!(error.to_string().contains("f32"), "{error}");
+}
 }

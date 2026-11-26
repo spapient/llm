@@ -12,7 +12,7 @@ fn file(json: &str, data: &[u8]) -> Vec<u8> {
     bytes
 }
 
-#[test]
+testkit::test_cases! {
 fn two_entries_are_read_back_byte_for_byte() {
     let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
 
@@ -39,7 +39,6 @@ fn two_entries_are_read_back_byte_for_byte() {
     assert_eq!(archive.read(b).expect("可读"), &data[24..]);
 }
 
-#[test]
 fn metadata_is_skipped_but_must_still_be_an_object() {
     let json = r#"{"__metadata__": {"format": "pt"}, "w": {"dtype": "I8", "shape": [2], "data_offsets": [0, 2]}}"#;
 
@@ -57,7 +56,6 @@ fn metadata_is_skipped_but_must_still_be_an_object() {
     assert!(error.to_string().contains("必须是对象"), "{error}");
 }
 
-#[test]
 fn an_unknown_dtype_is_unsupported_rather_than_guessed() {
     let json = r#"{"w": {"dtype": "I16", "shape": [1], "data_offsets": [0, 2]}}"#;
 
@@ -73,7 +71,6 @@ fn an_unknown_dtype_is_unsupported_rather_than_guessed() {
     );
 }
 
-#[test]
 fn an_unsigned_byte_entry_keeps_the_unsigned_eight_bit_type() {
     // 真实的 4 位量化权重存成 `U8`（两个 nibble 一个字节）：符号性保留，不与逐元素 `I8` 混同。
 
@@ -90,7 +87,6 @@ fn an_unsigned_byte_entry_keeps_the_unsigned_eight_bit_type() {
     assert_eq!(archive.read(entry).expect("可读"), &[1, 2]);
 }
 
-#[test]
 fn a_declared_interval_must_match_the_shape() {
     let json = r#"{"w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 16]}}"#;
 
@@ -101,7 +97,6 @@ fn a_declared_interval_must_match_the_shape() {
     assert!(error.to_string().contains("推出 24 字节"), "{error}");
 }
 
-#[test]
 fn unknown_and_missing_fields_are_rejected() {
     let unknown =
         r#"{"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4], "layout": "row"}}"#;
@@ -120,7 +115,6 @@ fn unknown_and_missing_fields_are_rejected() {
     );
 }
 
-#[test]
 fn a_data_section_that_does_not_match_the_header_is_rejected() {
     let json = r#"{"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}"#;
 
@@ -131,7 +125,6 @@ fn a_data_section_that_does_not_match_the_header_is_rejected() {
     }
 }
 
-#[test]
 fn a_broken_length_prefix_is_rejected() {
     assert!(Archive::parse(&[0u8; 4]).is_err(), "不足 8 字节");
 
@@ -146,7 +139,6 @@ fn a_broken_length_prefix_is_rejected() {
     assert!(Archive::parse(&file("[]", &[])).is_err(), "顶层必须是对象");
 }
 
-#[test]
 fn overlapping_and_reversed_intervals_are_rejected() {
     let overlap = r#"{"a": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]},
 
@@ -163,7 +155,6 @@ fn overlapping_and_reversed_intervals_are_rejected() {
     assert!(error.to_string().contains("晚于"), "{error}");
 }
 
-#[test]
 fn an_empty_archive_is_a_valid_zero_byte_file() {
     let bytes = file("{}", &[]);
 
@@ -174,6 +165,7 @@ fn an_empty_archive_is_a_valid_zero_byte_file() {
     assert_eq!(archive.payload_bytes(), 0);
 
     assert!(archive.data().is_empty());
+}
 }
 
 fn path(name: &str) -> std::path::PathBuf {
@@ -199,7 +191,7 @@ fn sparse(name: &str, json: &str, data_len: usize) -> std::path::PathBuf {
     target
 }
 
-#[test]
+testkit::test_cases! {
 fn a_gigabyte_of_weights_is_opened_by_reading_only_the_header() {
     // 1 GiB 数据段 + 尾部一个 4 字节条目：打开只读前缀与头部，读小条目只读那 4 字节。
 
@@ -240,7 +232,6 @@ fn a_gigabyte_of_weights_is_opened_by_reading_only_the_header() {
     let _ = std::fs::remove_file(target);
 }
 
-#[test]
 fn a_truncated_or_padded_file_is_rejected_when_it_is_opened() {
     let json = r#"{"w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]}}"#;
 
@@ -263,7 +254,6 @@ fn a_truncated_or_padded_file_is_rejected_when_it_is_opened() {
     let _ = std::fs::remove_file(padded);
 }
 
-#[test]
 fn a_prefix_that_promises_more_than_the_file_holds_is_rejected() {
     let short = path("short.safetensors");
 
@@ -286,7 +276,6 @@ fn a_prefix_that_promises_more_than_the_file_holds_is_rejected() {
     let _ = std::fs::remove_file(tiny);
 }
 
-#[test]
 fn a_missing_file_is_an_io_error_not_a_panic() {
     let error = File::open("/nonexistent/llm.safetensors").expect_err("打不开");
 
@@ -295,7 +284,6 @@ fn a_missing_file_is_an_io_error_not_a_panic() {
     assert!(error.to_string().contains("打开文件"), "{error}");
 }
 
-#[test]
 fn both_backends_produce_the_same_header_and_the_same_bytes() {
     let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
 
@@ -327,7 +315,6 @@ fn both_backends_produce_the_same_header_and_the_same_bytes() {
     let _ = std::fs::remove_file(target);
 }
 
-#[test]
 fn a_wrong_sized_buf_is_rejected_by_the_slice_backend_too() {
     let json = r#"{"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}"#;
 
@@ -350,4 +337,98 @@ fn a_wrong_sized_buf_is_rejected_by_the_slice_backend_too() {
     archive.copy_into(entry, &mut exact).expect("正好");
 
     assert_eq!(exact, [0u8; 4]);
+}
+}
+
+#[cfg(all(feature = "mmap", unix))]
+mod mmap_tests {
+    use std::path::PathBuf;
+
+    use diagnostic::Code;
+
+    use crate::{MmapSource, Reader};
+
+    /// 按 safetensors 布局拼一份临时文件：8 字节长度前缀 + 头部 JSON + 数据段。
+    fn write_file(json: &str, data: &[u8]) -> PathBuf {
+        let mut bytes = (json.len() as u64).to_le_bytes().to_vec();
+
+        bytes.extend_from_slice(json.as_bytes());
+
+        bytes.extend_from_slice(data);
+
+        let path = std::env::temp_dir().join(format!(
+            "llm_mmap_source_{}_{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        std::fs::write(&path, &bytes).expect("写临时权重文件");
+
+        path
+    }
+
+    testkit::test_cases! {
+    fn read_borrows_from_the_mapped_region() {
+        let data: Vec<u8> = (0..24u8).collect();
+
+        let json = r#"{"w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]}}"#;
+
+        let path = write_file(json, &data);
+
+        let source = MmapSource::open(&path).expect("映射打开");
+
+        let entry = source.header().get("w").expect("条目在位");
+
+        // 零拷贝证据：返回切片的地址必须落在映射区内部，而不是另拷出来的缓冲。
+
+        let mapped = source.as_slice();
+
+        let map_start = mapped.as_ptr() as usize;
+
+        let map_end = map_start + mapped.len();
+
+        let bytes = source.read(entry).expect("借用读取");
+
+        let bytes_start = bytes.as_ptr() as usize;
+
+        assert!(
+            bytes_start >= map_start && bytes_start + bytes.len() <= map_end,
+            "借用切片必须落在映射区内"
+        );
+
+        assert_eq!(bytes, &data[..]);
+
+        // 借用生命期绑定在源上：源存活期间切片可用，源释放后映射随之归还。
+
+        let again = source.read(entry).expect("二次借用仍有效");
+
+        assert_eq!(again, bytes);
+
+        std::fs::remove_file(&path).expect("清理");
+    }
+
+    fn a_missing_file_is_an_io_error() {
+        let path = PathBuf::from("/nonexistent/path/llm_mmap_source_no_such_file");
+
+        let error = MmapSource::open(&path).expect_err("缺文件必须报错");
+
+        assert_eq!(error.code(), Code::Io);
+    }
+
+    fn a_malformed_header_is_rejected_at_open() {
+        let path = write_file(
+            r#"{"w": {"dtype": "F32", "shape": [2], "data_offsets": [0, 48]}}"#,
+            &[0u8; 24],
+        );
+
+        let error = MmapSource::open(&path).expect_err("长度不符必须报错");
+
+        assert_eq!(error.code(), Code::Invalid);
+
+        std::fs::remove_file(&path).expect("清理");
+    }
+    }
 }

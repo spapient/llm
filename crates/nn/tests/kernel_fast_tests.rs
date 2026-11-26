@@ -27,22 +27,19 @@ fn check_i8(m: usize, n: usize, k: usize) {
     assert_eq!(got, want, "gemm_i8 与参考逐元素相等（整数无舍入）");
 }
 
-#[test]
+testkit::test_cases! {
 fn i8_matches_on_panel_multiples() {
     check_i8(64, 64, 96);
 }
 
-#[test]
 fn i8_matches_on_ragged_tails() {
     check_i8(37, 19, 33);
 }
 
-#[test]
 fn i8_matches_on_prefill_shape() {
     check_i8(256, 256, 4096);
 }
 
-#[test]
 fn i8_concurrent_calls_are_isolated() {
     // 多槽池：并发调用各租一组空闲槽，必须互不干扰且不挂死。
     let shapes = [(64usize, 64usize, 96usize), (80, 32, 128), (96, 48, 64)];
@@ -58,6 +55,7 @@ fn i8_concurrent_calls_are_isolated() {
             });
         }
     });
+}
 }
 
 pub(super) fn sample(len: usize, salt: u32) -> Vec<f32> {
@@ -107,29 +105,25 @@ fn check_fast_gemm(m: usize, n: usize, k: usize) {
     check_gemm(m, n, k, gemm_f32, "fast gemm 与标量参考容差内一致");
 }
 
-#[test]
+testkit::test_cases! {
 fn matches_scalar_on_tile_multiples() {
     check_fast_gemm(64, 64, 96);
 }
 
-#[test]
 fn matches_scalar_on_ragged_edges() {
     check_fast_gemm(100, 70, 4093);
 }
 
-#[test]
 fn matches_scalar_trivial() {
     check_fast_gemm(1, 1, 1);
     check_fast_gemm(7, 3, 5);
 }
 
-#[test]
 fn matches_scalar_on_prefill_shape() {
     check_fast_gemm(256, 256, 4096);
 }
 
 /// 吞吐基线：`cargo test --release -p llm-nn --lib fast::bench_throughput -- --ignored --nocapture`
-#[test]
 #[ignore = "吞吐基线，手动跑"]
 fn bench_throughput() {
     use std::time::Instant;
@@ -218,7 +212,6 @@ fn bench_throughput() {
 
 /// 探针清单按目标架构暴露全部候选；是否可执行由各探针的运行时安全门回答。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
-#[test]
 fn probe_list_matches_the_target() {
     let probes = probes();
     assert!(probes.iter().all(|p| p.ops_per_round > 0), "{probes:?}");
@@ -229,11 +222,12 @@ fn probe_list_matches_the_target() {
     }
     assert!(probes.iter().any(|p| p.group == "i8_peak"));
 }
+}
 
 use super::with_panels;
 
+testkit::test_cases! {
 /// 同一线程两次借用拿到同一块地址：复用生效，且旧内容不会越界泄漏到新长度之外。
-#[test]
 fn a_second_borrow_reuses_the_same_buf() {
     let first = with_panels(1024, |buf| buf.as_ptr() as usize);
     let second = with_panels(512, |buf| (buf.as_ptr() as usize, buf.len()));
@@ -242,7 +236,6 @@ fn a_second_borrow_reuses_the_same_buf() {
 }
 
 /// 扩容时新增段清零：面板补零列依赖这一点。
-#[test]
 fn growing_the_buf_clears_the_new_tail() {
     with_panels(16, |buf| buf.fill(1.0));
     with_panels(64, |buf| {
@@ -252,7 +245,6 @@ fn growing_the_buf_clears_the_new_tail() {
 }
 
 /// 重入：借用期间再借一次不 panic，内层拿到的是另一块。
-#[test]
 fn a_nested_borrow_falls_back_to_a_temporary() {
     let outer = with_panels(8, |buf| {
         buf.fill(3.0);
@@ -262,4 +254,5 @@ fn a_nested_borrow_falls_back_to_a_temporary() {
         buf[0]
     });
     assert_eq!(outer, 3.0);
+}
 }

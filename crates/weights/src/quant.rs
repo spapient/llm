@@ -866,9 +866,5 @@ fn average_bits(group: usize, len: usize, levels: &[usize]) -> f64 {
 mod ptq_tests;
 
 #[cfg(test)]
-#[path = "../tests/adaptive.rs"]
-mod adaptive_tests;
-
-#[cfg(test)]
 #[path = "../tests/quant.rs"]
 mod tests;

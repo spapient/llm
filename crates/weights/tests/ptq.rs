@@ -3,8 +3,8 @@ use super::{
     I2, I3, I4, I8, adaptive_quantize, compensate, compensate_adaptive, dequantize, quantize,
 };
 
+testkit::test_cases! {
 /// 打包位序：i4 低 nibble 在前，`[7, -7]` → 码 `[15, 1]` → 字节 `0x1F`。
-#[test]
 fn i4_packs_low_nibble_first() {
     let (packed, scales) = quantize(I4, 32, &[7.0, -7.0]).expect("合法输入");
     assert_eq!(packed, vec![0x1F]);
@@ -15,7 +15,6 @@ fn i4_packs_low_nibble_first() {
 }
 
 /// 打包位序：i2 每字节 4 码，`[1, -1, 0, 0]` → 码 `[3, 1, 2, 2]` → 字节 `0xA7`。
-#[test]
 fn i2_packs_four_codes_per_byte() {
     let (packed, scales) = quantize(I2, 32, &[1.0, -1.0, 0.0, 0.0]).expect("合法输入");
     assert_eq!(packed, vec![0xA7]);
@@ -26,7 +25,6 @@ fn i2_packs_four_codes_per_byte() {
 }
 
 /// 打包位序：i3 每字节不整除，`[3, -3, 1, 0]` → 码 `[6, 0, 4, 3]` → 三个字节的位流。
-#[test]
 fn i3_packs_three_bits_per_code() {
     let (packed, scales) = quantize(I3, 32, &[3.0, -3.0, 1.0, 0.0]).expect("合法输入");
     assert_eq!(scales, vec![1.0]);
@@ -45,7 +43,6 @@ fn i3_packs_three_bits_per_code() {
 }
 
 /// 自适应分配按误差预算选位宽：极紧预算停在全 8bit 且不达标，极松预算一路降到 2bit。
-#[test]
 fn adaptive_quantize_assigns_bits_by_error_budget() {
     let x: Vec<f32> = (0..256).map(|i| ((i as f32).sin()) * 3.7).collect();
     let norm: f64 = x
@@ -69,7 +66,6 @@ fn adaptive_quantize_assigns_bits_by_error_budget() {
 }
 
 /// i8 逐元素二补码：`[127, -127]` → 字节 `[127, 129]`，反解归位。
-#[test]
 fn i8_stores_twos_complement() {
     let (packed, scales) = quantize(I8, 32, &[127.0, -127.0]).expect("合法输入");
     assert_eq!(packed, vec![127, 129]);
@@ -80,7 +76,6 @@ fn i8_stores_twos_complement() {
 }
 
 /// 量化误差有界：每元素误差不超过本组半码距（`scale / 2`），且余弦相似度随位宽提升。
-#[test]
 fn round_trip_error_is_bounded() {
     let x: Vec<f32> = (0..256)
         .map(|i| ((i as f32).sin() * 3.7) + (i as f32 % 7.0) - 3.0)
@@ -121,7 +116,6 @@ fn round_trip_error_is_bounded() {
 }
 
 /// 全零组不产生零 scale：scale 取 1，码全为对称零点（i4 为 8），反解精确归零。
-#[test]
 fn all_zero_group_is_invertible() {
     let x = [0.0f32; 64];
     let (packed, scales) = quantize(I4, 32, &x).expect("合法输入");
@@ -133,7 +127,6 @@ fn all_zero_group_is_invertible() {
 }
 
 /// 非法输入：零分组、非有限值、长度不匹配都显式报错，不静默。
-#[test]
 fn rejects_bad_inputs() {
     assert!(quantize(I4, 0, &[1.0]).is_err());
     assert!(quantize(I4, 32, &[f32::NAN]).is_err());
@@ -150,7 +143,6 @@ fn rejects_bad_inputs() {
 /// 口径与 §10.10 M4/E5 卡一致：W4A16、g=32；SNR = 20·log10(‖Wx‖ / ‖Wx − Q(W)x‖)，
 /// 跨层取 P50。本测试只出数字、不设 ≥44 dB 断言——44 dB 是门禁而非通过条件；
 /// 当前 `quantize` 是无补偿的对称分组量化，必须如实报告它离门禁的距离，而不是伪造达标。
-#[test]
 #[ignore = "量化精度基准：cargo test -p llm-weights --lib -- output_space_snr_scan --ignored --nocapture"]
 fn output_space_snr_scan() {
     let (rows, cols, g) = (2048usize, 2048usize, 32usize);
@@ -188,6 +180,7 @@ fn output_space_snr_scan() {
             snrs.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>()
         );
     }
+}
 }
 
 /// `y = Wx` 与 `‖y − Q(W)x‖` 的 f64 累积：SNR = 20·log10(‖y‖ / ‖y − ŷ‖)。
@@ -247,12 +240,12 @@ fn low_rank_plus_noise(m: usize, n: usize, r: usize, sigma_n: f32, seed: u64) ->
     w
 }
 
+testkit::test_cases! {
 /// M4 谱隙证书自动拒压 + 秩-10 残差补偿（`#[ignore]`：
 /// `cargo test -p llm-weights --lib -- m4_residual_compensation_snr --release --ignored --nocapture`）。
 ///
 /// 谱隙证书（`svd::signal_rank`，相对阈值 0.2）自动选秩：结构近似低秩权重在秩 10 处有谱隙
 /// → 补偿；满秩高斯无谱隙 → 拒压。σn∈{0.1,0.2,0.3} 扫描补偿 SNR 的 44 dB 分界。
-#[test]
 #[ignore = "M4 补偿基准：cargo test -p llm-weights --lib -- m4_residual_compensation_snr --release --ignored --nocapture"]
 fn m4_residual_compensation_snr() {
     let (m, n, r) = (512usize, 512usize, 10usize);
@@ -291,7 +284,6 @@ fn m4_residual_compensation_snr() {
 ///
 /// 谱隙选秩 + 残差 `{2,3,4,8}` 自适应量化，目标 44 dB：σn 越大残差越难压，分配器自动多给
 /// 8bit 组，平均码位随 σn 上升——σn=0.3 也达到 ≥44 dB（代价是 bpw 从 4 升到 ~6）。
-#[test]
 #[ignore = "E5 自适应基准：cargo test -p llm-weights --lib -- e5_adaptive_allocation_snr --release --ignored --nocapture"]
 fn e5_adaptive_allocation_snr() {
     let (m, n, r) = (512usize, 512usize, 10usize);
@@ -318,6 +310,7 @@ fn e5_adaptive_allocation_snr() {
             None => println!("E5 结构化 σn={sigma_n} 拒压（无谱隙）"),
         }
     }
+}
 }
 
 /// 位宽直方图：`(2bit 组数, 3bit 组数, 4bit 组数, 8bit 组数)`。

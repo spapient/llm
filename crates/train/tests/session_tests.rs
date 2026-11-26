@@ -95,8 +95,8 @@ fn forward_two_layer(
     Ok(())
 }
 
+testkit::test_cases! {
 /// 夹具语料按批跑通指定步数：前向 → 计划分类终点 → 梯度缓冲 → 优化器步，loss 逐步入账。
-#[test]
 fn a_fixture_dataset_runs_the_declared_steps() {
     let (tape, sizes, p, x, loss) = fixture();
     let tokens: Vec<u32> = (0..12).collect();
@@ -125,7 +125,6 @@ fn a_fixture_dataset_runs_the_declared_steps() {
 }
 
 /// 梯度累积：窗口未满前逐批汇总梯度、不步进；满窗后按汇总梯度走一次优化器。
-#[test]
 fn gradients_accumulate_over_the_window_before_one_step() {
     let (tape, sizes, p, x, loss) = fixture();
     let tokens: Vec<u32> = (0..8).collect();
@@ -160,7 +159,6 @@ fn gradients_accumulate_over_the_window_before_one_step() {
 }
 
 /// 权重绑定：回填时源槽参数整块复制到绑定槽；未登记变量不能绑定。
-#[test]
 fn tied_parameter_copies_source_on_backfill() -> Result<()> {
     let mut tape = Tape::new();
     let p = tape.parameter();
@@ -186,7 +184,6 @@ fn tied_parameter_copies_source_on_backfill() -> Result<()> {
 
 /// 两层真实装配夹具：源/回填槽经若干 micro-batch 各自更新分化后，回填把 tied 整块复制成
 /// source；未绑定参数不被改动。
-#[test]
 fn tied_parameter_copies_source_across_a_two_layer_fixture() -> Result<()> {
     let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
     let config = TrainConfig::new(1e-2, 0, 2, None, 1)?;
@@ -220,7 +217,6 @@ fn tied_parameter_copies_source_across_a_two_layer_fixture() -> Result<()> {
 
 /// 会话窗口状态入快照：多次累积后的梯度总和、micro-batch 计数与绑定表写进快照再读回，
 /// 逐字段相等；空累积窗口路径由快照侧用例覆盖。
-#[test]
 fn session_window_state_round_trips_through_snapshot() -> Result<()> {
     let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
     let config = TrainConfig::new(1e-2, 0, 4, None, 4)?;
@@ -265,7 +261,6 @@ fn session_window_state_round_trips_through_snapshot() -> Result<()> {
 
 /// 会话状态快照回载：源会话窗口汇总/绑定表/步号写进快照，回载到另一个同装配会话后
 /// accum / ties / 步号逐字段一致；矩状态走优化器 restore（SGD 对应空表）。
-#[test]
 fn session_state_round_trips_through_restore_snapshot() -> Result<()> {
     let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
     let config = TrainConfig::new(1e-2, 0, 4, None, 4)?;
@@ -315,7 +310,6 @@ fn session_state_round_trips_through_restore_snapshot() -> Result<()> {
 
 /// 回载对账：累积槽位数错位、槽长度不符、ties 编号越界、矩槽位数/长度错位，一律
 /// [`Code::Invalid`]，拒绝前不改写会话状态。
-#[test]
 fn restore_snapshot_rejects_mismatched_state() -> Result<()> {
     let (tape, sizes, w_source, w_tied, u, _x, _h, _t, _loss) = two_layer_fixture();
     let mut target = open_session(tape, sizes, TrainConfig::default());
@@ -398,7 +392,6 @@ fn restore_snapshot_rejects_mismatched_state() -> Result<()> {
 }
 
 /// 非梯度终点的叶子不能登记为参数槽。
-#[test]
 fn a_non_endpoint_leaf_is_rejected_as_a_parameter() {
     let mut tape = Tape::new();
     let x = tape.leaf();
@@ -414,7 +407,6 @@ fn a_non_endpoint_leaf_is_rejected_as_a_parameter() {
 }
 
 /// 连不到 loss 的参数不进优化器：计划对账时拒绝。
-#[test]
 fn an_unreachable_parameter_is_rejected_at_plan_time() {
     let mut tape = Tape::new();
     let orphan = tape.parameter();
@@ -440,7 +432,6 @@ fn an_unreachable_parameter_is_rejected_at_plan_time() {
 }
 
 /// 批形状与 token 数不符时拒绝，不把错位批次带进循环。
-#[test]
 fn a_mismatched_batch_shape_is_rejected() {
     let (tape, sizes, p, _x, _loss) = fixture();
     let config = TrainConfig::default();
@@ -454,7 +445,6 @@ fn a_mismatched_batch_shape_is_rejected() {
 }
 
 /// 梯度没装入就步进：缺梯度是一条 Missing，不做半截更新。
-#[test]
 fn stepping_without_a_gradient_is_rejected() -> Result<()> {
     let (tape, sizes, p, x, loss) = fixture();
     let config = TrainConfig::default();
@@ -471,7 +461,6 @@ fn stepping_without_a_gradient_is_rejected() -> Result<()> {
 }
 
 /// 会话配置是全局裁剪的事实源：四槽梯度的总范数为 8，裁剪到 1 后每格更新 0.05。
-#[test]
 fn session_config_drives_the_optimizer_clip() -> Result<()> {
     let (tape, sizes, p, _x, _loss) = fixture();
     let config = TrainConfig::new(0.1, 0, 1, Some(1.0), 1)?;
@@ -488,7 +477,6 @@ fn session_config_drives_the_optimizer_clip() -> Result<()> {
 }
 
 /// 满窗步进失败时不提交 micro-batch 计数，也不推进优化器步号。
-#[test]
 fn a_failed_window_step_does_not_commit_its_counter() -> Result<()> {
     let (tape, sizes, p, _x, _loss) = fixture();
     let config = TrainConfig::new(0.1, 0, 1, None, 2)?;
@@ -505,7 +493,6 @@ fn a_failed_window_step_does_not_commit_its_counter() -> Result<()> {
 }
 
 /// 所有浮点配置都拒绝非有限值；裁剪阈值还必须是正数。
-#[test]
 fn train_config_rejects_non_finite_and_non_positive_values() {
     for learning_rate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
         let error = TrainConfig::new(learning_rate, 0, 1, None, 1).expect_err("非法学习率必须拒绝");
@@ -519,7 +506,6 @@ fn train_config_rejects_non_finite_and_non_positive_values() {
 }
 
 /// 非零指纹在结构校验之前对账，失败时不写步数、梯度或绑定状态。
-#[test]
 fn restore_rejects_config_drift_before_writing_any_state() -> Result<()> {
     let (tape, sizes, p, _x, _loss) = fixture();
     let config = TrainConfig::new(1e-2, 0, 4, None, 2)?;
@@ -540,7 +526,6 @@ fn restore_rejects_config_drift_before_writing_any_state() -> Result<()> {
 }
 
 /// 独立梯度快照：按 `Var` 复制的副本在清零缓冲后仍然有效，未带梯度的变量查不到。
-#[test]
 fn gradient_snapshot_is_var_keyed_and_survives_zero_gradients() {
     let (tape, sizes, p, x, _loss) = fixture();
     let config = TrainConfig::new(1e-2, 0, 1, None, 1).expect("配置合法");
@@ -562,7 +547,6 @@ fn gradient_snapshot_is_var_keyed_and_survives_zero_gradients() {
 }
 
 /// 参数、梯度与镜像缓冲跨视图周期保持同一地址，清零后的梯度也复用原容量。
-#[test]
 fn parameter_views_and_gradients_reuse_their_allocations() {
     let (tape, sizes, p, _x, _loss) = fixture();
     let config = TrainConfig::new(1e-3, 0, 1, None, 1).expect("配置");
@@ -600,7 +584,6 @@ fn parameter_views_and_gradients_reuse_their_allocations() {
 }
 
 /// 参数视图热路径复制基准；默认忽略，优化前后用同一命令测量。
-#[test]
 #[ignore = "性能测量，需要显式运行"]
 fn parameter_view_pipeline_copy_benchmark() {
     const WIDTH: usize = 16_384;
@@ -622,6 +605,7 @@ fn parameter_view_pipeline_copy_benchmark() {
     }
     let elapsed = started.elapsed();
     println!("parameter-view pipeline: {ITERS} iterations x {WIDTH} f32 in {elapsed:?}");
+}
 }
 
 /// 检查点事实集：恢复所需的最小事实集与偏差拒绝。
@@ -648,7 +632,7 @@ mod checkpoint {
         (checkpoint, header, topology)
     }
 
-    #[test]
+    testkit::test_cases! {
     fn a_checkpoint_records_the_minimum_state_needed_to_resume() {
         let (checkpoint, _header, topology) = fixture();
         assert_eq!(checkpoint.step(), 7);
@@ -680,7 +664,6 @@ mod checkpoint {
         );
     }
 
-    #[test]
     fn a_checkpoint_becomes_a_snapshot_that_round_trips() {
         let (checkpoint, header, _topology) = fixture();
         let checkpoint = checkpoint.with_config_fingerprint(0x0123_4567_89ab_cdef);
@@ -703,7 +686,6 @@ mod checkpoint {
         );
     }
 
-    #[test]
     fn a_checkpoint_without_layers_is_rejected() {
         let tape = autograd::Tape::new();
         let tokens = [1];
@@ -718,9 +700,9 @@ mod checkpoint {
         );
     }
 
-    #[test]
     fn a_layer_exposes_the_operators_it_was_validated_against() {
         let layer = nn::Linear::new("blk.0.attn_q", 4, 4).expect("层");
         assert_eq!(operators(&layer), ["gemv_i4"]);
+    }
     }
 }

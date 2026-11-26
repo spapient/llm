@@ -8,8 +8,8 @@ fn builtin() -> OpDecl {
     op.to_decl().expect("内置声明必须自洽")
 }
 
+testkit::test_cases! {
 /// 计数与展开必须同一个口径：装载期只数不物化，调用方仍然可以拿到组合。
-#[test]
 fn the_tile_count_matches_the_expanded_combinations() {
     let op = builtin();
     assert_eq!(
@@ -18,7 +18,6 @@ fn the_tile_count_matches_the_expanded_combinations() {
     );
 }
 
-#[test]
 fn a_tile_overflow_names_the_axis_to_prune() {
     let mut op = builtin();
     // 把首轴 GMAX 撑到 9 个取值：候选数 9 超过上限 8。
@@ -33,7 +32,6 @@ fn a_tile_overflow_names_the_axis_to_prune() {
 
 /// 属性键属于原语自己的签名：`sat` 是 `cvt` 的参数，写在 `store` 上既不会被协商检查，
 /// 也不会被片段消费。判据必须点名原语、键与该原语真正允许的参数。
-#[test]
 fn an_attr_key_must_belong_to_its_primitive() {
     let store = Prim::Store;
     assert!(!store.accepts(AttrKey::Sat), "`store` 不接受 `sat`");
@@ -44,12 +42,12 @@ fn an_attr_key_must_belong_to_its_primitive() {
 }
 
 /// 降级链的单调性判据接受借用名：装载期不为它拷一份 `String`。
-#[test]
 fn the_monotonic_chain_is_checked_on_borrowed_names() {
     let chain = [("first", 0.5), ("second", 0.5)];
     assert!(sch::check_monotonic(&chain).is_ok());
     let reversed = [("first", 0.4), ("second", 0.9)];
     assert!(sch::check_monotonic(&reversed).is_err());
+}
 }
 
 /// 手搓一个最小算子：只填 `compose`/`reads`/`writes` 用得到的字段，签名从模板解析。
@@ -71,8 +69,8 @@ fn minimal(name: &str, template: &str, phases: Vec<Phase>) -> OpDecl {
     }
 }
 
+testkit::test_cases! {
 /// 槽位代数：生产者写出的缓冲与消费者读入的同类型缓冲就是一条缝。
-#[test]
 fn compose_pairs_a_producer_write_with_a_consumer_read_of_the_same_dtype() {
     let producer = crate::catalogue::named("gemv_f32")
         .map(|op| op.to_decl().expect("gemv_f32 自洽"))
@@ -93,7 +91,6 @@ fn compose_pairs_a_producer_write_with_a_consumer_read_of_the_same_dtype() {
 }
 
 /// 缺省阶段：单内核 = 单阶段，名字取算子名，读/写槽位从签名派生。
-#[test]
 fn the_default_phase_is_derived_from_the_signature() {
     let op = builtin();
     assert_eq!(
@@ -112,7 +109,6 @@ fn the_default_phase_is_derived_from_the_signature() {
 }
 
 /// 类型不一致不拼：生产者只写 `u8`，消费者只读 `f32`，没有任何缝。
-#[test]
 fn compose_rejects_a_dtype_mismatch() {
     let producer = minimal(
         "u8w",
@@ -138,7 +134,6 @@ fn compose_rejects_a_dtype_mismatch() {
 /// 自融合不拼：`gemv_f32` 写 `y`、读 `w`/`x`，全是 F32，所以"gemv→gemv"在槽位上看起来有两条
 /// 缝（`y→w`、`y→x`）——但那是循环携带依赖，拼出来的融合核无法定义执行顺序，还会白占一个预算
 /// 名额。槽位代数必须自己排除它，不能指望调用方记得去重。
-#[test]
 fn compose_rejects_a_self_fusion() {
     let gemv = builtin();
     assert!(compose(&gemv, &gemv).is_none(), "同一算子不是一条缝");
@@ -158,7 +153,6 @@ fn compose_rejects_a_self_fusion() {
 }
 
 /// 强类型变体仍拒绝非有限占比与非相邻重名，不靠动态解析器补检。
-#[test]
 fn typed_variants_keep_share_and_global_name_validation() {
     let first = builtin()
         .variants
@@ -177,4 +171,5 @@ fn typed_variants_keep_share_and_global_name_validation() {
     middle.order = first.order + 1;
     let error = check_chain(&[first.clone(), middle, first]).expect_err("非相邻变体也不允许重名");
     assert!(error.to_string().contains("重复"), "{error}");
+}
 }

@@ -94,7 +94,7 @@ fn relative(path: &Path) -> String {
         .to_string()
 }
 
-#[test]
+testkit::test_cases! {
 fn every_production_file_fits_the_density_budget() {
     let offenders: Vec<String> = rust_files(&crate_dir().join("src"))
         .into_iter()
@@ -107,7 +107,6 @@ fn every_production_file_fits_the_density_budget() {
     );
 }
 
-#[test]
 fn every_test_file_fits_the_density_budget() {
     let offenders: Vec<String> = rust_files(&crate_dir().join("tests"))
         .into_iter()
@@ -121,7 +120,6 @@ fn every_test_file_fits_the_density_budget() {
 }
 
 /// `src/` 只有一层：再往下就是分组，不是平铺。
-#[test]
 fn the_production_tree_stays_flat() {
     let source = crate_dir().join("src");
     let mut nested = Vec::new();
@@ -143,7 +141,6 @@ fn the_production_tree_stays_flat() {
 }
 
 /// 文件名即模块名、单词、无下划线（N4）。
-#[test]
 fn module_file_names_are_single_words() {
     let offenders: Vec<String> = rust_files(&crate_dir().join("src"))
         .into_iter()
@@ -158,7 +155,6 @@ fn module_file_names_are_single_words() {
 }
 
 /// 测试代码不住在生产目录：`src/` 里只允许 `#[path = "..."]` 钩子。
-#[test]
 fn production_files_only_hook_tests_in() {
     let offenders: Vec<String> = rust_files(&crate_dir().join("src"))
         .into_iter()
@@ -173,13 +169,14 @@ fn production_files_only_hook_tests_in() {
         "`src/` 里出现了内联测试，应移到 `tests/` 并用 `#[path]` 挂回：{offenders:#?}"
     );
 }
+}
 
 fn args(words: &[&str]) -> Vec<String> {
     words.iter().map(std::string::ToString::to_string).collect()
 }
 
+testkit::test_cases! {
 /// 解析一次的分配次数是**契约**：改文法或取值类型时，先想清楚多的那次分配值不值。
-#[test]
 fn parsing_a_bare_command_allocates_nothing() {
     let argv = args(&["status"]);
     let (count, invocation) =
@@ -188,7 +185,6 @@ fn parsing_a_bare_command_allocates_nothing() {
 }
 
 /// 取值一律借用 `argv`，因此取值个数不影响分配次数：多一个选项就多一次分配的写法在这里是缺陷。
-#[test]
 fn parsing_borrows_every_value_instead_of_copying_it() {
     for words in [
         &["run", "--weights", "w.safetensors", "--input", "1,2"][..],
@@ -204,7 +200,6 @@ fn parsing_borrows_every_value_instead_of_copying_it() {
 
 /// 吞吐探针：默认忽略，避免计时抖动进断言；要数字时用
 /// `cargo test -p llm-cli --release --test audit -- --ignored --nocapture` 跑一次。
-#[test]
 #[ignore = "计时探针，只在需要数字时手动跑"]
 fn parse_throughput() {
     let argv = args(&[
@@ -226,4 +221,5 @@ fn parse_throughput() {
         "Invocation::parse：{} ns/次（{rounds} 次取总时长）",
         elapsed.as_nanos() / rounds
     );
+}
 }

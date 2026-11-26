@@ -20,7 +20,7 @@ fn write_safetensors(name: &str) -> std::path::PathBuf {
     path
 }
 
-#[test]
+testkit::test_cases! {
 fn without_a_weights_file_the_model_is_the_declared_stack() {
     let (model, row) = load_model(None).expect("声明层合法");
     assert_eq!(model.layers().len(), 2);
@@ -31,7 +31,6 @@ fn without_a_weights_file_the_model_is_the_declared_stack() {
     assert!(floor.unpriced().is_empty(), "声明的 int4 层都能计价");
 }
 
-#[test]
 fn a_real_file_supplies_the_layers_and_reports_what_it_could_not_use() {
     let path = write_safetensors("llm-status-test.safetensors");
     let (model, row) = load_model(Some(&path.display().to_string())).expect("文件合法");
@@ -78,14 +77,12 @@ fn a_real_file_supplies_the_layers_and_reports_what_it_could_not_use() {
     let _ = std::fs::remove_file(path);
 }
 
-#[test]
 fn a_missing_file_is_an_io_error_not_a_panic() {
     let error = load_model(Some("/nonexistent/llm.safetensors")).expect_err("读不到");
     assert_eq!(error.code(), diagnostic::Code::Io);
     assert!(error.to_string().contains("打开文件"), "{error}");
 }
 
-#[test]
 fn a_truncated_file_fails_before_any_layer_is_used() {
     let path = std::env::temp_dir().join(format!("{}-truncated.safetensors", std::process::id()));
     let json = r#"{"w.weight": {"dtype": "F32", "shape": [2, 2], "data_offsets": [0, 16]}}"#;
@@ -98,4 +95,5 @@ fn a_truncated_file_fails_before_any_layer_is_used() {
     assert_eq!(error.code(), diagnostic::Code::Invalid);
     assert!(error.to_string().contains("文件被截断"), "{error}");
     let _ = std::fs::remove_file(path);
+}
 }

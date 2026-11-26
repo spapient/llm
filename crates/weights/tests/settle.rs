@@ -62,7 +62,7 @@ fn only(settlement: &Settlement) -> &Settled {
     entry
 }
 
-#[test]
+testkit::test_cases! {
 fn a_rank_compressed_tensor_carries_a_sound_certificate() {
     // 精确 rank-2 且边长足够：因子化存的是 `(m+n)·r` 个数，整张 `L` 是 `m·n` 个数，收益随
 
@@ -86,7 +86,6 @@ fn a_rank_compressed_tensor_carries_a_sound_certificate() {
     assert!(entry.render().contains("\"cert\": \"l0_diagnostic\""));
 }
 
-#[test]
 fn a_tensor_that_never_used_rank_reports_no_certificate() {
     // 满秩且含噪声：五种轴都不更小，落成 `store`/`rans`，本来就没有证书可言。
 
@@ -99,7 +98,6 @@ fn a_tensor_that_never_used_rank_reports_no_certificate() {
     assert_eq!(only(&settlement).cert().as_str(), "none");
 }
 
-#[test]
 fn a_certificate_that_names_another_measurement_is_refused() {
     let cert = crate::ledger::certify(&values_low_rank(4, 4), 4, 4)
         .expect("可认证")
@@ -134,7 +132,6 @@ fn a_certificate_that_names_another_measurement_is_refused() {
     }
 }
 
-#[test]
 fn a_refused_certificate_forbids_the_book_from_calling_it_compressed() {
     // 判决只看两件事：省了字节、证书不矛盾。缺后者，字节再小也不叫 `compress`。
 
@@ -152,7 +149,6 @@ fn a_refused_certificate_forbids_the_book_from_calling_it_compressed() {
     assert_eq!(entry.decision(), "reject", "证书背不住就退回原样");
 }
 
-#[test]
 fn certificate_column_names_are_stable() {
     let names: Vec<&str> = [Cert::None, Cert::Diagnostic, Cert::Refused]
         .into_iter()
@@ -162,7 +158,6 @@ fn certificate_column_names_are_stable() {
     assert_eq!(names, ["none", "l0_diagnostic", "refused"]);
 }
 
-#[test]
 fn a_stored_tensor_reports_its_dense_length_and_no_gain() {
     let values: Vec<f32> = (1..=64).map(|i| i as f32).collect();
 
@@ -187,7 +182,6 @@ fn a_stored_tensor_reports_its_dense_length_and_no_gain() {
     assert!(entry.bitwise() && entry.lossless());
 }
 
-#[test]
 fn a_compressed_tensor_reports_the_measured_gain() {
     let settlement = settled(vec![f32_segment("w", &compressible(1024))], true);
 
@@ -208,7 +202,6 @@ fn a_compressed_tensor_reports_the_measured_gain() {
     assert!(entry.lossless());
 }
 
-#[test]
 fn a_tiny_tensor_is_passed_through_instead_of_coded() {
     let settlement = settled(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
 
@@ -223,7 +216,6 @@ fn a_tiny_tensor_is_passed_through_instead_of_coded() {
     assert!(entry.lossless(), "原样落盘仍然无损");
 }
 
-#[test]
 fn default_thresholds_preserve_the_canonical_ledger() {
     let (settlement, bytes) = container(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
 
@@ -232,7 +224,6 @@ fn default_thresholds_preserve_the_canonical_ledger() {
     assert_eq!(explicit.render(), settlement.render());
 }
 
-#[test]
 fn custom_thresholds_change_the_reason_without_changing_the_container() {
     let (_, bytes) = container(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
     let thresholds = Thresholds {
@@ -245,7 +236,6 @@ fn custom_thresholds_change_the_reason_without_changing_the_container() {
     assert_eq!(only(&settlement).reason(), Reason::Raw);
 }
 
-#[test]
 fn verification_requires_the_same_thresholds_as_settlement() {
     let (_, bytes) = container(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
     let thresholds = Thresholds {
@@ -264,7 +254,6 @@ fn verification_requires_the_same_thresholds_as_settlement() {
     assert!(error.to_string().contains("codec_reason"), "{error}");
 }
 
-#[test]
 fn a_deduplicated_tensor_occupies_no_bytes_and_says_so() {
     let values = compressible(512);
 
@@ -288,7 +277,6 @@ fn a_deduplicated_tensor_occupies_no_bytes_and_says_so() {
     assert_eq!(tied.raw_len(), 2048, "逻辑长度仍是这张量自己的");
 }
 
-#[test]
 fn a_quantized_tensor_is_never_lossless_and_reports_real_bits() {
     let quant = Quant::new(1, 1, 0, false, Wire::F16, None).expect("方案");
 
@@ -305,7 +293,6 @@ fn a_quantized_tensor_is_never_lossless_and_reports_real_bits() {
     assert!(!settlement.lossless());
 }
 
-#[test]
 fn entropy_is_measured_on_the_logical_bytes() {
     let settlement = settled(vec![f32_segment("zeros", &[0.0; 64])], false);
 
@@ -318,7 +305,6 @@ fn entropy_is_measured_on_the_logical_bytes() {
     );
 }
 
-#[test]
 fn an_empty_tensor_does_not_divide_by_zero() {
     let segment = Segment::new("empty", Wire::F32, vec![0], None, Vec::new()).expect("段");
 
@@ -335,7 +321,6 @@ fn an_empty_tensor_does_not_divide_by_zero() {
     assert_eq!(settlement.total_ratio(), 1.0);
 }
 
-#[test]
 fn the_ledger_carries_every_contracted_key_in_a_stable_order() {
     let settlement = settled(vec![f32_segment("l.0.w", &compressible(256))], true);
 
@@ -365,7 +350,6 @@ fn the_ledger_carries_every_contracted_key_in_a_stable_order() {
     assert!(text.ends_with("  ]\n}\n"));
 }
 
-#[test]
 fn a_name_without_a_layer_idx_maps_to_null() {
     let settlement = settled(vec![f32_segment("embed", &compressible(64))], true);
 
@@ -374,14 +358,12 @@ fn a_name_without_a_layer_idx_maps_to_null() {
     assert!(settlement.render().contains("\"layer\": null"));
 }
 
-#[test]
 fn the_ledger_refuses_bytes_that_are_not_a_container() {
     let error = Settlement::settle(&[0u8; 8]).expect_err("不是容器");
 
     assert_eq!(error.code(), diagnostic::Code::Invalid);
 }
 
-#[test]
 fn a_cell_this_bytes_cannot_produce_is_rejected() {
     let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
 
@@ -419,7 +401,6 @@ fn a_cell_this_bytes_cannot_produce_is_rejected() {
     assert!(error.to_string().contains("author"), "{error}");
 }
 
-#[test]
 fn the_book_reads_back_as_itself() {
     let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
 
@@ -432,7 +413,6 @@ fn the_book_reads_back_as_itself() {
     assert_eq!(read.tensors().len(), settlement.tensors().len());
 }
 
-#[test]
 fn one_altered_cell_is_rejected_and_named() {
     let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
 
@@ -453,7 +433,6 @@ fn one_altered_cell_is_rejected_and_named() {
     assert!(message.contains("a 的"), "{message}");
 }
 
-#[test]
 fn a_decimal_written_another_way_is_not_the_same_book() {
     // 账本是同一份字节的规范产物：`1` 与 `1.000000` 不是同一格，哪怕数值相等。
 
@@ -476,7 +455,6 @@ fn a_decimal_written_another_way_is_not_the_same_book() {
     assert!(error.to_string().contains("1.000000"), "{error}");
 }
 
-#[test]
 fn a_book_missing_a_cell_is_incomplete_rather_than_lenient() {
     let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
 
@@ -492,7 +470,6 @@ fn a_book_missing_a_cell_is_incomplete_rather_than_lenient() {
     assert!(error.to_string().contains("is_lossless"), "{error}");
 }
 
-#[test]
 fn a_book_for_another_container_is_rejected() {
     let (one, _) = container(vec![f32_segment("a", &compressible(256))], true);
 
@@ -511,7 +488,6 @@ fn a_book_for_another_container_is_rejected() {
     assert!(error.to_string().contains("2 段"), "{error}");
 }
 
-#[test]
 fn the_ledger_agrees_with_the_container_metrics() {
     let values = compressible(1024);
 
@@ -536,7 +512,6 @@ fn the_ledger_agrees_with_the_container_metrics() {
     assert_eq!(settlement.file_len(), bytes.len());
 }
 
-#[test]
 fn every_reason_has_a_stable_name() {
     let names: Vec<&str> = [
         Reason::Raw,
@@ -567,9 +542,9 @@ fn every_reason_has_a_stable_name() {
     );
 }
 
-#[test]
 fn strings_from_the_file_are_escaped() {
     assert_eq!(escape("a\"b\\c\n"), "a\\\"b\\\\c\\n");
 
     assert_eq!(escape("\u{1}"), "\\u0001");
+}
 }

@@ -179,48 +179,29 @@ fn row_dot(a: &[f32], b: &[f32], i: usize, j: usize, d: usize) -> f32 {
     (0..d).map(|h| a[i * d + h] * b[j * d + h]).sum()
 }
 
-/// 注意力闭式：`O = softmax(QKᵀ/√d)·V`，查询行数与历史行数解耦，返回全部输出的和。
-fn attention_loss(q: &[f32], k: &[f32], v: &[f32], q_rows: usize, hist: usize, d: usize) -> f32 {
-    let scale = 1.0 / (d as f32).sqrt();
-    let mut total = 0.0;
-    for i in 0..q_rows {
-        let scores: Vec<f32> = (0..hist).map(|j| row_dot(q, k, i, j, d) * scale).collect();
-        let max = scores.iter().copied().fold(f32::MIN, f32::max);
-        let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
-        let sum: f32 = exps.iter().sum();
-        total += (0..d)
-            .map(|h| {
-                (0..hist)
-                    .map(|j| (exps[j] / sum) * v[j * d + h])
-                    .sum::<f32>()
-            })
-            .sum::<f32>();
-    }
-    total
-}
-
-/// 潜空间注意力闭式：`O = softmax(QKᵀ/√W)·V`，但 `V` 与输出只有 `dc` 列（读宽 `W`、写宽 `dc`），
-/// 返回全部输出的和。
-fn latent_loss(
+/// 注意力闭式：`O = softmax(QKᵀ/√W)·V`，查询与历史行数、V/输出宽度均可配置。
+fn attention_loss(
     q: &[f32],
     k: &[f32],
     v: &[f32],
     rows: usize,
     hist: usize,
-    w: usize,
-    dc: usize,
+    width: usize,
+    output: usize,
 ) -> f32 {
-    let scale = 1.0 / (w as f32).sqrt();
+    let scale = 1.0 / (width as f32).sqrt();
     let mut total = 0.0;
     for i in 0..rows {
-        let scores: Vec<f32> = (0..hist).map(|j| row_dot(q, k, i, j, w) * scale).collect();
+        let scores: Vec<f32> = (0..hist)
+            .map(|j| row_dot(q, k, i, j, width) * scale)
+            .collect();
         let max = scores.iter().copied().fold(f32::MIN, f32::max);
         let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
         let sum: f32 = exps.iter().sum();
-        total += (0..dc)
+        total += (0..output)
             .map(|h| {
                 (0..hist)
-                    .map(|j| (exps[j] / sum) * v[j * dc + h])
+                    .map(|j| (exps[j] / sum) * v[j * output + h])
                     .sum::<f32>()
             })
             .sum::<f32>();
@@ -421,12 +402,12 @@ mod graph;
 #[path = "backprop_norm_tests.rs"]
 mod norm;
 
+testkit::test_cases! {
 /// 暂存复用：第二次反传不再向分配器要内存（容量之和与热身后的完全一致）。
 ///
 /// 反向每个节点都要一份"上游梯度 / 各输入前向值 / 输出前向值"的只读快照，因为这些快照与
 /// `&mut bufs` 冲突；快照放在 `Bufs` 自持的 `Scratch` 里逐节点复用，于是稳态零分配。
 /// 此断言盯的正是这一点：容量只增不减，故"容量不变"等价于"没有重新分配"。
-#[test]
 fn a_warm_backward_pass_reuses_its_scratch() -> Result<()> {
     let p0 = [0.5f32, -1.5, 2.0];
     let mut tape = Tape::new();
@@ -462,7 +443,6 @@ fn a_warm_backward_pass_reuses_its_scratch() -> Result<()> {
 /// `d loss / d beta_c = n * spatial` —— 这是个可解析判据，不靠拟合：
 /// 第 `t` 步后 `beta_c = -t * lr * n * spatial`，`loss = -channels * t * lr * (n * spatial)^2`。
 /// 同时覆盖 `Bufs::compute_shaped` 的几何登记通道在真实训练循环里能被反向取到。
-#[test]
 fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     let (n, spatial, channels) = (2usize, 3usize, 4usize);
     let len = n * spatial * channels;
@@ -546,7 +526,6 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
 ///
 /// 初始 `(0, 1)`、动量 0.1，同一批数据过两次：`mean` 应为 `0.1 * μ` 再 `0.19 * μ`，
 /// `var` 应为 `0.9 + 0.1 * u` 再 `0.81 + 0.19 * u`（`u` 是无偏 batch 方差）。
-#[test]
 fn rolling_statistics_persist_across_steps_in_the_bufs() -> Result<()> {
     let (n, spatial, channels) = (2usize, 3usize, 2usize);
     let len = n * spatial * channels;
@@ -612,7 +591,6 @@ fn rolling_statistics_persist_across_steps_in_the_bufs() -> Result<()> {
 }
 
 /// `loss = Σ conv2d(x, weight, bias)`：三个输入各做一次中心差分，声明档与任意步长/补零两种几何。
-#[test]
 fn conv2d_gradients_match_central_differences_on_any_geometry() -> Result<()> {
     let shapes = [
         Geometry::declared("conv2d_f32")?,
@@ -651,7 +629,6 @@ fn conv2d_gradients_match_central_differences_on_any_geometry() -> Result<()> {
 }
 
 /// 声明档前向：`Bufs::compute("conv2d_f32")` 的适配路径与算子自身的 reference 逐位一致。
-#[test]
 fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
     let sample = nn::conv::conv2d::sample(0, 0);
     let x = sample.f32("x")?.to_vec();
@@ -685,4 +662,5 @@ fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
         assert!((g - w).abs() <= 1e-6, "第 {idx} 个输出 {g} vs {w}");
     }
     Ok(())
+}
 }

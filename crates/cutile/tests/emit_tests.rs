@@ -1,7 +1,7 @@
 use super::*;
 
+testkit::test_cases! {
 /// §16 的片段判据是“同一对数与两个门槛比”：上限管成败，内部目标只是余量。
-#[test]
 fn the_fragment_verdict_reads_the_p0_limits() {
     assert_eq!(FRAGMENT_LIMIT, 400, "README §16 的上限");
     assert_eq!(FRAGMENT_GOAL, 240, "README §16 的内部目标");
@@ -14,14 +14,12 @@ fn the_fragment_verdict_reads_the_p0_limits() {
     );
 }
 
-#[test]
 fn fnv_is_stable_and_distinguishes_inputs() {
     assert_eq!(fnv1a("abc"), fnv1a("abc"));
     assert_ne!(fnv1a("abc"), fnv1a("abd"));
     assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
 }
 
-#[test]
 fn assemble_puts_provenance_in_the_header() {
     let profile = Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案");
     let op = prof::catalogue::named("gemv_i4")
@@ -42,7 +40,6 @@ fn assemble_puts_provenance_in_the_header() {
     assert_eq!(source.lang, Emit::C);
 }
 
-#[test]
 fn assemble_defines_the_c_float4_type_for_template_kernels() {
     let profile = Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案");
     let op = prof::catalogue::named("add_f32x4")
@@ -68,4 +65,5 @@ fn assemble_defines_the_c_float4_type_for_template_kernels() {
             .count(),
         1
     );
+}
 }

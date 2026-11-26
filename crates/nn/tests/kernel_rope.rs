@@ -1,6 +1,6 @@
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn rope_matches_the_scalar_reference() {
     let sample = sample(128, 1);
     let expected = reference(&sample).expect("参考可计算");
@@ -9,14 +9,12 @@ fn rope_matches_the_scalar_reference() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn an_odd_length_passes_its_tail_through() {
     let out = rotate(&[1.0, 2.0, 3.0], 0.0).expect("奇数长度不报错");
     assert_eq!(out[2], 3.0, "末尾无法配对的元素原样透传");
 }
 
 /// 退化与重复边界：空行放行；长度不齐拒绝；重复偶数元素在同相位下结果对称。
-#[test]
 fn rope_handles_empty_mismatched_and_repeated_pairs() {
     let mut empty = vec![];
     forward(0, tensor::View::one(&[]), &mut empty).expect("空行放行");
@@ -33,7 +31,6 @@ fn rope_handles_empty_mismatched_and_repeated_pairs() {
     assert!(out.iter().all(|v| v.is_finite()), "结果有限");
 }
 
-#[test]
 fn heads_split_rotation_recomputes_frequency_per_head() {
     let head_dim = 4;
     let heads = 2;
@@ -53,7 +50,6 @@ fn heads_split_rotation_recomputes_frequency_per_head() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn one_head_rope_matches_the_single_head_forward() {
     let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let mut single = vec![0.0; x.len()];
@@ -63,7 +59,6 @@ fn one_head_rope_matches_the_single_head_forward() {
     assert_eq!(single, multi, "heads=1 必须与单头入口逐元素等价");
 }
 
-#[test]
 fn heads_rope_rejects_bad_head_dimension() {
     let mut out = vec![0.0; 8];
     // 头宽为 0。
@@ -75,7 +70,6 @@ fn heads_rope_rejects_bad_head_dimension() {
     assert!(forward_heads(0, tensor::View::one(&[1.0; 8]), &mut short, 4).is_err());
 }
 
-#[test]
 fn batch_rotates_each_segment_at_its_own_position() {
     let head_dim = 4;
     let heads = 2;
@@ -108,7 +102,6 @@ fn batch_rotates_each_segment_at_its_own_position() {
     assert_eq!(out, expected);
 }
 
-#[test]
 fn f32_batch_positions_match_the_usize_entry_without_a_conversion_buf() {
     let x: Vec<f32> = (0..16).map(|idx| idx as f32 * 0.25 - 2.0).collect();
     let positions = [3.0f32, 9.0];
@@ -126,7 +119,6 @@ fn f32_batch_positions_match_the_usize_entry_without_a_conversion_buf() {
     assert_eq!(produced, expected);
 }
 
-#[test]
 fn batch_one_entry_matches_the_heads_kernel() {
     let head_dim = 4;
     let heads = 2;
@@ -140,7 +132,6 @@ fn batch_one_entry_matches_the_heads_kernel() {
     assert_eq!(multi, batch, "batch=1 必须与多头入口逐元素等价");
 }
 
-#[test]
 fn batch_rejects_empty_positions_and_bad_length() {
     let head_dim = 4;
     let x = vec![1.0; 8];
@@ -155,4 +146,5 @@ fn batch_rejects_empty_positions_and_bad_length() {
     // 输入输出不等长。
     let mut short = vec![0.0; 7];
     assert!(forward_batch(&[0], tensor::View::one(x.as_slice()), &mut short, head_dim).is_err());
+}
 }

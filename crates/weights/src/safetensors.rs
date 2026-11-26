@@ -637,7 +637,3 @@ fn offset(value: &Value) -> Result<usize> {
 #[cfg(test)]
 #[path = "../tests/safetensors.rs"]
 mod tests;
-
-#[cfg(all(feature = "mmap", unix, test))]
-#[path = "../tests/mmap.rs"]
-mod mmap_tests;

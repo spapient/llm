@@ -18,7 +18,7 @@ const USAGE_COMMANDS: [&str; 9] = [
 use std::path::PathBuf;
 use support::{good_weights, llm};
 
-#[test]
+testkit::test_cases! {
 fn help_prints_the_usage_and_succeeds() {
     let output = llm().arg("help").output().expect("进程可派生");
     assert_eq!(output.status.code(), Some(0), "`help` 是正常结束，不是错误");
@@ -36,7 +36,6 @@ fn help_prints_the_usage_and_succeeds() {
     );
 }
 
-#[test]
 fn the_default_command_reports_every_layer() {
     let output = llm().output().expect("进程可派生");
     assert_eq!(output.status.code(), Some(0), "不给参数就是 `status`");
@@ -52,7 +51,6 @@ fn the_default_command_reports_every_layer() {
     }
 }
 
-#[test]
 fn an_unknown_command_exits_with_the_usage_error_code() {
     let output = llm().arg("frobnicate").output().expect("进程可派生");
     assert_eq!(output.status.code(), Some(2), "未知命令是 invalid=2");
@@ -65,7 +63,6 @@ fn an_unknown_command_exits_with_the_usage_error_code() {
     assert!(output.stdout.is_empty(), "错误信息不该同时写到 stdout");
 }
 
-#[test]
 fn a_missing_option_value_is_a_parse_error_not_a_default() {
     let output = llm()
         .args(["run", "--weights"])
@@ -79,7 +76,6 @@ fn a_missing_option_value_is_a_parse_error_not_a_default() {
     );
 }
 
-#[test]
 fn a_weights_file_that_does_not_exist_exits_with_the_io_code() {
     let missing = std::env::temp_dir().join("llm-cli-definitely-absent.safetensors");
     let output = llm()
@@ -95,7 +91,6 @@ fn a_weights_file_that_does_not_exist_exits_with_the_io_code() {
     );
 }
 
-#[test]
 fn a_truncated_weights_file_exits_with_the_invalid_code() {
     let (path, header) = good_weights("truncated");
     // 砍掉最后 16 字节：头部声明的数据段比文件长，属"文件被截断"。
@@ -115,7 +110,6 @@ fn a_truncated_weights_file_exits_with_the_invalid_code() {
     assert!(header.contains("blk.0.attn_q.weight"), "夹具本身没被改动");
 }
 
-#[test]
 fn status_reads_headers_from_a_weights_file() {
     let (path, _) = good_weights("status");
     let output = llm()
@@ -137,6 +131,7 @@ fn status_reads_headers_from_a_weights_file() {
         stdout.contains("未覆盖 1 条"),
         "秩 1 的条目必须如实列进未覆盖清单，而不是被静默忽略"
     );
+}
 }
 
 /// 写一份合成快照：3 槽累积梯度、3 个 micro-batch、可选绑定对；权重段为空。
@@ -183,9 +178,9 @@ fn train_load_reports_accumulation_window_and_tie_pairs() {
     assert!(stdout.contains("0 对"), "无绑定时报 0 对：{stdout}");
 }
 
-/// 合成一份 `.u` 容器：复用现有 safetensors 样板经 `import` 落盘，再交给 `inspect` / `check`。
+// 合成一份 `.u` 容器：复用现有 safetensors 样板经 `import` 落盘，再交给 `inspect` / `check`。
 
-#[test]
+testkit::test_cases! {
 fn archive_commands_reject_missing_or_unknown_grammar() {
     // `import` 缺 `--out`：两个选项都必需，不猜默认输出路径。
     let source = good_weights("grammar").0;
@@ -216,7 +211,6 @@ fn archive_commands_reject_missing_or_unknown_grammar() {
 }
 
 /// 内核审计不在 `llm` 的文法里：本层不认 `verify` / `bench`，但用法文本必须指出它在哪里。
-#[test]
 fn kernel_audit_commands_belong_to_the_other_entry_and_usage_says_so() {
     for command in ["verify", "bench"] {
         let output = llm().arg(command).output().expect("进程可派生");
@@ -234,7 +228,6 @@ fn kernel_audit_commands_belong_to_the_other_entry_and_usage_says_so() {
     );
 }
 
-#[test]
 fn a_run_never_ends_in_a_panic() {
     // 这台机器上可能没有编译器、也没有设备：`run` 允许失败，但**只能**以诊断结束。
     // 退出码 101 是 Rust 的 panic 约定，出现即说明错误路径把结论变成了崩溃。
@@ -268,7 +261,6 @@ fn a_run_never_ends_in_a_panic() {
     }
 }
 
-#[test]
 fn train_reads_config_files_and_explicit_flags_override_them() {
     let path =
         std::env::temp_dir().join(format!("llm-cli-train-config-{}.toml", std::process::id()));
@@ -293,7 +285,6 @@ fn train_reads_config_files_and_explicit_flags_override_them() {
     assert!(stdout.contains("2 × 4"), "批形状应来自文件：{stdout}");
 }
 
-#[test]
 fn train_rejects_non_finite_values_from_set() {
     let output = llm()
         .args(["--set", "train.learning_rate=NaN", "train"])
@@ -302,4 +293,5 @@ fn train_rejects_non_finite_values_from_set() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("有限数"), "诊断应说明非有限值：{stderr}");
+}
 }

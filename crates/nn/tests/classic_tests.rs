@@ -18,7 +18,7 @@ fn geom3() -> ConvGeom {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn conv2d_registers_its_shape_and_conv_operator() {
     let layer = Conv2d::new("stem.conv", 3, 64, geom3(), 32, 32).expect("合法");
     assert_eq!(layer.name(), "stem.conv");
@@ -30,7 +30,6 @@ fn conv2d_registers_its_shape_and_conv_operator() {
     assert!(floor.flops() > 0.0 && floor.bytes() > 0);
 }
 
-#[test]
 fn spatial_floors_are_the_output_shape_rule() {
     // 这一族的 `impl Contract` 都由 `priced!` 生成，下界实参不再写在各层里：行 = 输出 numel / 末轴，
     // 宽 = 末轴。口径收成一份之后，"抄错一个乘积"的风险也收成了一份、且编译器看不见——本用例把
@@ -61,12 +60,10 @@ fn spatial_floors_are_the_output_shape_rule() {
     );
 }
 
-#[test]
 fn conv2d_rejects_zero_channels() {
     assert!(Conv2d::new("x", 0, 8, geom3(), 8, 8).is_err());
 }
 
-#[test]
 fn conv1d_and_transpose_lengths_follow_the_geometry() {
     // 一维卷积只吃 `kw/sw/pw`：核 2、步长 1、无补零，长度 9 → 8。
     let layer = Conv1d::new(
@@ -96,7 +93,6 @@ fn conv1d_and_transpose_lengths_follow_the_geometry() {
     assert_eq!(up2.output().dims(), [8, 8, 6]);
 }
 
-#[test]
 fn pool_and_interpolate_layers_bind_one_real_operator() {
     let pool = MaxPool1d::new("p1", 2, 2, 0, 8, 4).expect("合法");
     assert_eq!(pool.output().dims(), [4, 4]);
@@ -122,7 +118,6 @@ fn pool_and_interpolate_layers_bind_one_real_operator() {
     assert_eq!(up.spca().ops(), ["interpolate_f32"]);
 }
 
-#[test]
 fn norm_layers_check_their_geometry() {
     let bn = BatchNorm2d::new("bn", 64, 1e-5, 0.1).expect("合法");
     assert_eq!(bn.output().dims(), [64]);
@@ -147,4 +142,5 @@ fn norm_layers_check_their_geometry() {
     let ln = LayerNorm::new("ln", 512, 1e-5).expect("合法");
     assert_eq!(ln.output().dims(), [512]);
     assert!(LayerNorm::new("ln", 512, -1.0).is_err());
+}
 }

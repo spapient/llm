@@ -40,7 +40,7 @@ fn cost() -> Cost {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn roofline_is_the_bottleneck_plus_unmasked_part() {
     let profile = profile();
     let cost = cost();
@@ -52,7 +52,6 @@ fn roofline_is_the_bottleneck_plus_unmasked_part() {
     assert!((both - compute_only.max(memory_only)).abs() < 1e-18);
 }
 
-#[test]
 fn select_takes_the_declared_tile() {
     let plan = select(&op(), &profile(), &path(0.62), cost()).expect("可选择");
     assert_eq!(plan.variant, "pipe2");
@@ -63,7 +62,6 @@ fn select_takes_the_declared_tile() {
     assert!(plan.masking.within_limit(), "首选变体应当达标");
 }
 
-#[test]
 fn the_plan_line_reports_the_judgement_it_used() {
     // 计划行里的百分比与阈值结论必须是判定的那两个数，而不是另算一份。
     let plan = select(&op(), &profile(), &path(0.62), cost()).expect("可选择");
@@ -71,7 +69,6 @@ fn the_plan_line_reports_the_judgement_it_used() {
     assert!(line.contains("未掩盖 19%（阈值 20%，达标）"), "{line}");
 }
 
-#[test]
 fn a_falling_back_variant_is_reported_not_rejected() {
     // 兜底变体的掩盖账超阈值是事实，不是错误：`select` 照旧出计划，行里写明它是降级兜底。
     let plan = select(&op(), &profile(), &fallback(0.35), cost()).expect("兜底也应有计划");
@@ -84,7 +81,6 @@ fn a_falling_back_variant_is_reported_not_rejected() {
     );
 }
 
-#[test]
 fn declaration_order_decides_the_tile_not_its_size() {
     // 轴取值顺序即优先级：把 64 写在前面就取 64，即使它更大。
     let mut op = op();
@@ -93,7 +89,6 @@ fn declaration_order_decides_the_tile_not_its_size() {
     assert_eq!(plan.tile.summary(), "GMAX=64");
 }
 
-#[test]
 fn prediction_is_the_same_for_every_tile() {
     // 模型里没有可比较的量：两个候选的预测必须相同，否则说明有人给 predict 编了常数。
     let mut wide = op();
@@ -104,7 +99,6 @@ fn prediction_is_the_same_for_every_tile() {
     assert_eq!(narrow.bytes, wide.bytes);
 }
 
-#[test]
 fn profile_without_peaks_is_an_error() {
     let mut profile = profile();
     profile.peak = crate::prof::Peak::default();
@@ -113,14 +107,12 @@ fn profile_without_peaks_is_an_error() {
     assert!(error.to_string().contains("roofline"), "{error}");
 }
 
-#[test]
 fn the_window_radius_is_solved_from_the_budget() {
     assert_eq!(window_radius(1), 1);
     assert_eq!(window_radius(4), 2);
     assert_eq!(window_radius(10), 4, "√10 = 3.16 → 向上取整 4");
 }
 
-#[test]
 fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
     let parse = |name: &str| {
         prof::catalogue::named(name)
@@ -145,6 +137,7 @@ fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
             .any(|fusion| fusion.producer == "gemv_f32" && fusion.consumer == "gelu_f32"),
         "可拼的生产者→消费者对必须留下"
     );
+}
 }
 
 /// 内置声明表：`fusions` 与 `ranking` 的输入就是它。
@@ -171,7 +164,7 @@ fn pool_into_attention() -> Fusion {
     compose(&parse("adaptive_pool_f32"), &parse("attention_f32")).expect("能拼")
 }
 
-#[test]
+testkit::test_cases! {
 fn a_fusion_never_slows_down() {
     let profile = profile();
     let ranked = ranking(&profile, &decls(), 12, models());
@@ -194,7 +187,6 @@ fn a_fusion_never_slows_down() {
     assert!(scored > 0, "内置注册表上至少有一条候选打得出分");
 }
 
-#[test]
 fn the_payoff_is_the_intermediate_round_trip() {
     let profile = profile();
     let fusion = pool_into_attention();
@@ -213,7 +205,6 @@ fn the_payoff_is_the_intermediate_round_trip() {
     assert!(payoff.saved_bytes <= cost.bytes() * 2, "省的不能超过往返");
 }
 
-#[test]
 fn the_payoff_agrees_with_predict() {
     let profile = profile();
     let fusion = pool_into_attention();
@@ -237,7 +228,6 @@ fn the_payoff_agrees_with_predict() {
     assert!((payoff.unfused_s - unfused).abs() < 1e-18, "{payoff:?}");
 }
 
-#[test]
 fn scoring_refuses_without_peaks() {
     let mut profile = profile();
     profile.peak = crate::prof::Peak::default();
@@ -248,7 +238,6 @@ fn scoring_refuses_without_peaks() {
     ));
 }
 
-#[test]
 fn a_candidate_without_a_semantic_model_is_unscorable() {
     let mut fusion = pool_into_attention();
     fusion.producer = "没有这个算子".to_string();
@@ -258,7 +247,6 @@ fn a_candidate_without_a_semantic_model_is_unscorable() {
     ));
 }
 
-#[test]
 fn a_multi_output_seam_cannot_be_attributed() {
     let mut fusion = pool_into_attention();
     let mut second = fusion.seams[0].clone();
@@ -271,7 +259,6 @@ fn a_multi_output_seam_cannot_be_attributed() {
     ));
 }
 
-#[test]
 fn the_ranking_covers_every_candidate_and_orders_it() {
     let profile = profile();
     let ranked = ranking(&profile, &decls(), 12, models());
@@ -308,7 +295,6 @@ fn the_ranking_covers_every_candidate_and_orders_it() {
 }
 
 /// 启发式只重排已有候选，形状改变时默认配置可以确定性改变。
-#[test]
 fn heuristic_candidates_are_shape_aware_and_declared_backed() {
     let mut op = op();
     op.axes[0].values = vec![32, 256];
@@ -325,11 +311,11 @@ fn heuristic_candidates_are_shape_aware_and_declared_backed() {
 }
 
 /// 手工构造的零体积配置不得触发取模 panic，也不能进入正常计划。
-#[test]
 fn heuristic_zero_volume_is_ordered_last_without_panicking() {
     let mut op = op();
     op.axes[0].values = vec![0, 16];
     let shape = ShapeCtx::new([('n', 64)]).expect("形状");
     let candidates = candidates(&op, &shape).expect("零体积必须安全排序");
     assert_eq!(candidates.last().expect("末项").summary(), "GMAX=0");
+}
 }

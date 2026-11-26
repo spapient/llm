@@ -37,8 +37,8 @@ fn matrix_slots<'a>(
         .collect()
 }
 
+testkit::test_cases! {
 /// 角色 → 组的唯一映射：四个闭集角色逐项对拍，短名同步对齐。
-#[test]
 fn group_mapping_follows_the_role() {
     let cases = [
         (ParamRole::Trainable, Group::Trainable, "trainable"),
@@ -53,7 +53,6 @@ fn group_mapping_follows_the_role() {
 }
 
 /// SGD 一步：参数按 `-lr · grad` 更新，无衰减时数值可逐项断言。
-#[test]
 fn sgd_takes_one_direct_step() {
     let mut params = [vec![1.0_f32, 2.0], vec![0.5]];
     let mut grads = [vec![0.5_f32, -1.0], vec![0.25]];
@@ -69,7 +68,6 @@ fn sgd_takes_one_direct_step() {
 }
 
 /// 权重衰减只作用于非豁免组：归一化系数不衰减，投影权重按解耦口径衰减。
-#[test]
 fn weight_decay_applies_only_outside_exempt_groups() {
     let mut params = [vec![1.0_f32], vec![1.0]];
     let mut grads = [vec![0.2_f32], vec![0.2]];
@@ -87,7 +85,6 @@ fn weight_decay_applies_only_outside_exempt_groups() {
 }
 
 /// 裁剪按全局范数等比缩比：梯度极大时一步更新仍在阈值口径内。
-#[test]
 fn global_norm_clipping_scales_every_slot() {
     let mut params = [vec![1.0_f32]];
     let mut grads = [vec![100.0_f32]];
@@ -103,7 +100,6 @@ fn global_norm_clipping_scales_every_slot() {
 }
 
 /// 参数与梯度长度不一致是接线错误，一步都不更新。
-#[test]
 fn a_length_mismatch_is_rejected_before_update() {
     let mut params = [vec![1.0_f32, 2.0]];
     let mut grads = [vec![0.5_f32]];
@@ -118,7 +114,6 @@ fn a_length_mismatch_is_rejected_before_update() {
 }
 
 /// Adam 一步后权重沿梯度方向下降；矩状态由优化器自持，第二步不再是裸梯度方向。
-#[test]
 fn adam_moves_the_param_with_momentum() {
     let mut params = [vec![1.0_f32]];
     let mut grads = [vec![0.2_f32]];
@@ -139,7 +134,6 @@ fn adam_moves_the_param_with_momentum() {
 }
 
 /// 矩状态可导出并回载进新优化器：快照搬运的是这一份表，优化器之外不另存副本。
-#[test]
 fn adam_moments_round_trip_through_restore() {
     let mut params = [vec![1.0_f32, 2.0]];
     let mut grads = [vec![0.2_f32, -0.1]];
@@ -189,7 +183,6 @@ fn adam_moments_round_trip_through_restore() {
 }
 
 /// 回载的两张表槽位数或槽内长度不符：接线错误，先报错不改写矩状态。
-#[test]
 fn restore_rejects_mismatched_moment_tables() {
     let mut optimizer = Adam::new();
     let error = optimizer
@@ -203,7 +196,6 @@ fn restore_rejects_mismatched_moment_tables() {
 }
 
 /// 对象安全：优化器可装进 `&mut dyn Optimizer`。
-#[test]
 fn optimizer_is_object_safe() {
     let mut params = [vec![1.0_f32]];
     let mut grads = [vec![0.5_f32]];
@@ -220,7 +212,6 @@ fn optimizer_is_object_safe() {
 ///
 /// 五次迭代给的是**近似**极分解（收敛比约 0.72，值在 `[0.65, 1.15]` 一带振荡），所以断言的是
 /// “压缩比”而不是“精确等于 1”：后者要几十次迭代，而优化器只需要方向不失衡。
-#[test]
 fn the_orthogonalization_compresses_the_spectrum() {
     // 对角谱 1 / 2 / 3：不处理的话，更新量会按 3 : 2 : 1 分配。
     let grad = vec![1.0_f32, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
@@ -241,7 +232,6 @@ fn the_orthogonalization_compresses_the_spectrum() {
 }
 
 /// 更新量与梯度尺度无关：整体乘 1000，一步走多远不变。
-#[test]
 fn the_update_ignores_the_gradient_scale() {
     let base = vec![1.0_f32, -2.0, 0.5, 3.0, 0.0, -1.0];
     let mut params_small = [vec![1.0_f32; 6]];
@@ -275,7 +265,6 @@ fn the_update_ignores_the_gradient_scale() {
 }
 
 /// 非矩阵槽被拒且一步都不写回：跳过它等于让某个组永远不被训练。
-#[test]
 fn a_flat_slot_is_refused_before_any_update() {
     let mut params = [vec![1.0_f32, 2.0, 3.0]];
     let mut grads = [vec![0.5_f32, 0.5, 0.5]];
@@ -288,7 +277,6 @@ fn a_flat_slot_is_refused_before_any_update() {
 }
 
 /// 声明的行列积与参数长度不符：接线错误，在槽校验处就失败。
-#[test]
 fn a_shape_that_does_not_match_the_length_is_refused() {
     let mut params = [vec![1.0_f32, 2.0, 3.0, 4.0]];
     let mut grads = [vec![0.5_f32; 4]];
@@ -303,7 +291,6 @@ fn a_shape_that_does_not_match_the_length_is_refused() {
 }
 
 /// 非有限梯度在入口被拒：正交化会把 `NaN` 铺满整个方向。
-#[test]
 fn a_non_finite_gradient_is_refused() {
     let mut params = [vec![1.0_f32; 4]];
     let mut grads = [vec![1.0_f32, f32::NAN, 0.0, 0.0]];
@@ -319,7 +306,6 @@ fn a_non_finite_gradient_is_refused() {
 }
 
 /// 零梯度给出零更新：没有方向就没有正交化的东西，也不需要另开分支。
-#[test]
 fn a_zero_gradient_leaves_the_matrix_alone() {
     let mut params = [vec![1.0_f32, -2.0, 3.0, 0.5]];
     let mut grads = [vec![0.0_f32; 4]];
@@ -334,7 +320,6 @@ fn a_zero_gradient_leaves_the_matrix_alone() {
 }
 
 /// 解耦衰减跳过豁免角色：偏置原样保留，可训练权重按 `lr·decay` 缩。
-#[test]
 fn the_decay_still_follows_the_role() {
     let mut params = [vec![1.0_f32; 4], vec![1.0_f32; 4]];
     let mut grads = [vec![0.0_f32; 4], vec![0.0_f32; 4]];
@@ -354,7 +339,6 @@ fn the_decay_still_follows_the_role() {
 }
 
 /// 动量跨步累积：两步同梯度后缓冲为 `μ(μ·g + g) + g`。
-#[test]
 fn the_velocity_accumulates_across_steps() {
     let mut params = [vec![1.0_f32; 4]];
     let mut grads = [vec![0.0_f32, 1.0, 0.0, 0.0]];
@@ -378,7 +362,6 @@ fn the_velocity_accumulates_across_steps() {
 }
 
 /// 回载后轨迹逐位对齐；二阶矩非空时拒绝（Muon 只持一阶动量）。
-#[test]
 fn the_restore_round_trip_matches_the_source() {
     let mut params = [vec![1.0_f32; 4]];
     let mut grads = [vec![0.25_f32, -1.0, 2.0, 0.0]];
@@ -417,7 +400,6 @@ fn the_restore_round_trip_matches_the_source() {
 }
 
 /// 高瘦与矮宽走的是同一个迭代：转置后的方向就是转置。
-#[test]
 fn the_tall_and_wide_branches_are_the_same_iteration() {
     let tall = vec![0.5_f32, -1.0, 2.0, 0.25, 3.0, -0.5];
     let mut wide = Vec::with_capacity(tall.len());
@@ -438,7 +420,6 @@ fn the_tall_and_wide_branches_are_the_same_iteration() {
 }
 
 /// 混合优化器只按全局范数裁剪一次，且步进后归还原梯度口径。
-#[test]
 fn hybrid_clips_across_matrix_and_vector_slots_once() {
     let mut params = [vec![1.0; 4], vec![1.0]];
     let mut grads = [vec![3.0, 4.0, 0.0, 0.0], vec![0.0]];
@@ -454,7 +435,6 @@ fn hybrid_clips_across_matrix_and_vector_slots_once() {
 }
 
 /// 首次步进前按形状恢复：矩阵动量给 Muon，偏置双矩给 Adam。
-#[test]
 fn hybrid_restores_child_state_before_the_first_step() {
     let mut optimizer = Hybrid::new(Muon::new(), Adam::new());
     optimizer
@@ -473,7 +453,6 @@ fn hybrid_restores_child_state_before_the_first_step() {
 }
 
 /// 非有限梯度在任何子优化器更新前拒绝，两个参数槽都不动。
-#[test]
 fn hybrid_rejects_non_finite_gradients_without_partial_updates() {
     let mut params = [vec![1.0; 4], vec![2.0; 2]];
     let before = params.clone();
@@ -488,6 +467,7 @@ fn hybrid_rejects_non_finite_gradients_without_partial_updates() {
     assert_eq!(optimizer.matrix().step_count(), 0);
     assert_eq!(optimizer.other().step_count(), 0);
 }
+}
 
 fn invalid_optimizers() -> Vec<Box<dyn Optimizer>> {
     vec![
@@ -498,8 +478,8 @@ fn invalid_optimizers() -> Vec<Box<dyn Optimizer>> {
     ]
 }
 
+testkit::test_cases! {
 /// 非法超参在配置边界与直接步进入口都拒绝，不再静默关闭裁剪。
-#[test]
 fn invalid_hyperparameters_are_rejected_without_silent_fallback() {
     let mut optimizers = invalid_optimizers();
     for optimizer in &mut optimizers {
@@ -518,7 +498,6 @@ fn invalid_hyperparameters_are_rejected_without_silent_fallback() {
 }
 
 /// 非有限梯度不只由 Muon 拒绝，SGD 也必须在写参数前拒绝。
-#[test]
 fn sgd_rejects_non_finite_gradients_before_update() {
     let (mut params, mut grads) = ([vec![1.0_f32]], [vec![f32::NAN]]);
     let roles = [ParamRole::Trainable];
@@ -527,4 +506,5 @@ fn sgd_rejects_non_finite_gradients_before_update() {
         .expect_err("NaN 梯度");
     assert_eq!(error.code(), Code::Invalid);
     assert_eq!(params[0], [1.0]);
+}
 }

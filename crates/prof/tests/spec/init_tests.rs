@@ -1,6 +1,6 @@
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn xavier_uniform_within_bound() {
     let fan_in = 64;
     let fan_out = 128;
@@ -10,7 +10,6 @@ fn xavier_uniform_within_bound() {
     assert!(w.iter().all(|v| v.abs() <= bound + 1e-6), "越界");
 }
 
-#[test]
 fn kaiming_uniform_within_bound() {
     let fan_in = 256;
     let w = kaiming_uniform(fan_in, 8, 0.0, 6).unwrap();
@@ -19,7 +18,6 @@ fn kaiming_uniform_within_bound() {
     assert!(w.iter().all(|v| v.abs() <= bound + 1e-6));
 }
 
-#[test]
 fn orthogonal_has_unit_columns() {
     let (rows, cols) = (32, 16);
     let w = orthogonal(rows, cols, 1.0, 7).unwrap();
@@ -37,7 +35,6 @@ fn orthogonal_has_unit_columns() {
     }
 }
 
-#[test]
 fn orthogonal_has_unit_rows_when_fat() {
     let (rows, cols) = (8, 20);
     let w = orthogonal(rows, cols, 1.0, 8).unwrap();
@@ -53,16 +50,15 @@ fn orthogonal_has_unit_rows_when_fat() {
     }
 }
 
-#[test]
 fn same_seed_reproduces_weights() {
     let a = kaiming_normal(512, 64, 0.01, 99).unwrap();
     let b = kaiming_normal(512, 64, 0.01, 99).unwrap();
     assert_eq!(a, b);
 }
 
-#[test]
 fn zero_dims_are_rejected() {
     assert!(xavier_uniform(0, 8, 1).is_err());
     assert!(kaiming_uniform(0, 8, 0.0, 1).is_err());
     assert!(orthogonal(0, 4, 1.0, 1).is_err());
+}
 }

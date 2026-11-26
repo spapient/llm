@@ -20,6 +20,9 @@ syn = { workspace = true }
 # 仅在编译期宏进程内解析算子语料 TOML，不链接进消费方运行期二进制（见 ADR 0022 补记）。
 toml = { workspace = true }
 
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+
 [lints]
 workspace = true
 

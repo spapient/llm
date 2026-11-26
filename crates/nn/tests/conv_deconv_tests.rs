@@ -61,7 +61,7 @@ fn naive(
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn matches_naive_across_geometries() {
     let cases = [
         (
@@ -113,7 +113,6 @@ fn matches_naive_across_geometries() {
     }
 }
 
-#[test]
 fn transposed_conv_inverts_spatial_downsampling() {
     // stride=2、k=2、无补零：输出恰好是输入的 2 倍边长。
     let de = ConvTranspose2d::new(
@@ -132,7 +131,6 @@ fn transposed_conv_inverts_spatial_downsampling() {
     assert_eq!(de.ow(4).unwrap(), 8);
 }
 
-#[test]
 fn i8_matches_integer_naive() {
     let de = ConvTranspose2d::new(
         2,
@@ -186,7 +184,6 @@ fn i8_matches_integer_naive() {
     assert_eq!(got, want);
 }
 
-#[test]
 fn rejects_underflowing_geometry() {
     let de = ConvTranspose2d::new(
         1,
@@ -201,6 +198,7 @@ fn rejects_underflowing_geometry() {
         },
     );
     assert!(de.oh(1).is_err());
+}
 }
 
 /// 一维朴素转置卷积：逐输入位置、逐核元素散射累加后加偏置。
@@ -240,7 +238,7 @@ fn naive1(
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn conv_transpose1d_matches_naive() {
     // 三组几何：same（k3/s1/p1）、放大（k4/s2/p1）、不合补零（k2/s2/p0）。
     let cases = [
@@ -264,7 +262,6 @@ fn conv_transpose1d_matches_naive() {
     }
 }
 
-#[test]
 fn conv_transpose1d_stride_doubles_length() {
     let de = ConvTranspose1d::new(1, 1, 2, 2, 0);
     assert_eq!(de.len(4).unwrap(), 8);
@@ -277,7 +274,6 @@ fn conv_transpose1d_stride_doubles_length() {
     assert_eq!(out, [1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0]);
 }
 
-#[test]
 fn conv_transpose1d_i8_matches_integer_reference() {
     let de = ConvTranspose1d::new(3, 2, 3, 2, 1);
     let l = 5;
@@ -311,10 +307,10 @@ fn conv_transpose1d_i8_matches_integer_reference() {
     assert_eq!(got, want);
 }
 
-#[test]
 fn conv_transpose1d_rejects_bad_geometry() {
     let de = ConvTranspose1d::new(1, 1, 1, 0, 0);
     assert!(de.len(2).is_err());
     let de = ConvTranspose1d::new(1, 1, 1, 1, 3);
     assert!(de.len(1).is_err());
+}
 }

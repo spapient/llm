@@ -82,8 +82,8 @@ fn attending_then_feeding(main: &[f64], cache: &Latent<f64>, query: &Query<'_, f
     expected
 }
 
+testkit::test_cases! {
 /// 单流 + 单位混合时，这一层必须逐位等于「主路 + 注意力 + 前馈」：装配不许自己长出新算术。
-#[test]
 fn one_stream_identity_mixing_is_plain_residual_arithmetic() {
     let layer = layer(ffn(), 1);
     let cache = cache();
@@ -98,7 +98,6 @@ fn one_stream_identity_mixing_is_plain_residual_arithmetic() {
 }
 
 /// 两条路径在装配层里也给出同一个数（`f64` 按 `1e-12`）：等价性不是模块内的巧合。
-#[test]
 fn the_two_attention_paths_agree_inside_the_layer() {
     let layer = layer(ffn(), 1);
     let cache = cache();
@@ -117,7 +116,6 @@ fn the_two_attention_paths_agree_inside_the_layer() {
 }
 
 /// 前馈恒零时只剩注意力残差：钉住「注意力在前、前馈在后」这一处次序。
-#[test]
 fn a_silent_ffn_leaves_only_the_attention_residual() {
     let layer = layer(silent_ffn(), 1);
     let cache = cache();
@@ -137,7 +135,6 @@ fn a_silent_ffn_leaves_only_the_attention_residual() {
 }
 
 /// 未选中的专家改了也影响不到输出：装配层里稀疏性仍然成立。
-#[test]
 fn an_inactive_expert_cannot_change_the_output() {
     let hidden = vec![0.5, -1.0, 2.0, 0.25];
     let chosen: Vec<usize> = ffn()
@@ -162,7 +159,6 @@ fn an_inactive_expert_cannot_change_the_output() {
 }
 
 /// 缓存只读：本层不推进 `seq`，`M` 条流也不会变成 `M` 份 KV。
-#[test]
 fn the_layer_never_touches_the_cache() {
     let layer = layer(ffn(), 4);
     let cache = cache();
@@ -181,7 +177,6 @@ fn the_layer_never_touches_the_cache() {
 }
 
 /// 层首混流把各条流摊成同一份；增量只加回主路，另一条流带走混流后的值。
-#[test]
 fn mixing_spreads_the_streams_and_only_the_main_stream_takes_the_delta() {
     let residual = Mhc::new(&[1.0, 1.0, 1.0, 1.0], 2).expect("两流");
     let layer = Hybrid::new(attention(), ffn(), residual).expect("宽度一致");
@@ -207,7 +202,6 @@ fn mixing_spreads_the_streams_and_only_the_main_stream_takes_the_delta() {
 }
 
 /// 空缓存必须在写到任何地方之前被拒：位置读不到「还没生成到那一步」。
-#[test]
 fn an_empty_cache_is_refused_before_anything_is_touched() {
     let layer = layer(ffn(), 1);
     let empty = attention().empty_cache();
@@ -221,7 +215,6 @@ fn an_empty_cache_is_refused_before_anything_is_touched() {
 }
 
 /// 流几何错在入口被拒，且流不被改动：条数错、宽度不齐、宽度不等于本层宽度。
-#[test]
 fn stream_geometry_is_checked_at_entry() {
     let layer = layer(ffn(), 2);
     let cache = cache();
@@ -241,7 +234,6 @@ fn stream_geometry_is_checked_at_entry() {
 }
 
 /// 装配期就拒绝宽度不一致：注意力输出宽与前馈宽必须相等。
-#[test]
 fn assembly_rejects_a_width_mismatch() {
     let narrow = Moe::new(
         WIDTH - 1,
@@ -257,7 +249,6 @@ fn assembly_rejects_a_width_mismatch() {
 }
 
 /// 铺初值：每条流都是同一个值；宽度不对则拒绝。
-#[test]
 fn seeding_copies_the_hidden_state_into_every_stream() {
     let layer = layer(ffn(), 3);
     let seeded = layer.seed(&[1.0, 2.0, 3.0, 4.0]).expect("宽度合法");
@@ -269,6 +260,7 @@ fn seeding_copies_the_hidden_state_into_every_stream() {
         layer.seed(&[1.0, 2.0, 3.0]).expect_err("宽度不对").code(),
         Code::Invalid
     );
+}
 }
 
 /// 记忆层的几何：键维 2（门与查询宽）、值维 = 本栈宽度。
@@ -302,8 +294,8 @@ fn quiet<'a>(key: &'a [f64], value: &'a [f64]) -> MemoryStep<'a, f64> {
     }
 }
 
+testkit::test_cases! {
 /// 层序是「三记忆 + 一混合」重复：配比是构造条件，不是注释。
-#[test]
 fn the_order_is_three_memory_layers_then_one_mixed_layer() {
     let tower = tower(2, 1);
     assert_eq!(tower.depth(), 2 * (MEMORY_PER_ATTENTION + 1));
@@ -325,7 +317,6 @@ fn the_order_is_three_memory_layers_then_one_mixed_layer() {
 }
 
 /// 零记忆 + 写强度 0 时，整栈与单独跑混合层逐位相同：记忆层的存在不改主路。
-#[test]
 fn a_pristine_memory_with_no_writes_leaves_the_mixed_layer_untouched() {
     let tower = tower(1, 1);
     let cache = cache();
@@ -358,7 +349,6 @@ fn a_pristine_memory_with_no_writes_leaves_the_mixed_layer_untouched() {
 }
 
 /// 写进去立刻读得出来，且记忆跨格保留：写的一栈从第一格起就与只遗忘的一栈分叉。
-#[test]
 fn a_memory_written_once_is_read_back_on_the_next_step() {
     let tower = tower(1, 1);
     let cache = cache();
@@ -428,7 +418,6 @@ fn a_memory_written_once_is_read_back_on_the_next_step() {
 }
 
 /// 每个记忆层各持一份状态：三层写不同的值维，各自只留下自己那一行。
-#[test]
 fn each_memory_layer_owns_its_state() {
     let tower = tower(1, 1);
     let cache = cache();
@@ -470,7 +459,6 @@ fn each_memory_layer_owns_its_state() {
 }
 
 /// 层栈只读缓存：`seq` 与缓存元素都不动。
-#[test]
 fn the_tower_never_touches_the_cache() {
     let tower = tower(2, 2);
     let cache = cache();
@@ -494,6 +482,7 @@ fn the_tower_never_touches_the_cache() {
         )
         .expect("推进");
     assert_eq!((cache.seq(), cache.cache_elements()), before);
+}
 }
 
 /// 跑一次必定失败的一步：流与全部记忆都必须原样退回（后写的层不能留、前几层写过的也不能留）。
@@ -521,8 +510,8 @@ fn failed_step_rolls_back(
     assert!(state.is_pristine(), "前几层写过的记忆也不能留下");
 }
 
+testkit::test_cases! {
 /// 某一格失败时，流与全部记忆都原样退回：前几层写过的也不留。
-#[test]
 fn a_bad_memory_input_rolls_the_whole_layer_stack_back() {
     let tower = tower(1, 1);
     let cache = cache();
@@ -540,7 +529,6 @@ fn a_bad_memory_input_rolls_the_whole_layer_stack_back() {
 }
 
 /// 记忆输入的份数必须等于记忆层个数：少一份是错位，多一份是无主数据。
-#[test]
 fn the_number_of_memory_inputs_must_match_the_memory_layers() {
     let tower = tower(1, 1);
     let cache = cache();
@@ -554,7 +542,6 @@ fn the_number_of_memory_inputs_must_match_the_memory_layers() {
 }
 
 /// 流几何在入口判定：条数与宽度都必须正好是本栈的。
-#[test]
 fn stream_geometry_is_checked_before_the_first_memory_write() {
     let tower = tower(1, 2);
     let cache = cache();
@@ -586,7 +573,6 @@ fn stream_geometry_is_checked_before_the_first_memory_write() {
 }
 
 /// 配比与几何在装配期拒绝：不是 3:1、没有混合层、读出宽不齐、混合层之间几何不同源。
-#[test]
 fn assembly_enforces_the_recipe_and_the_geometry() {
     let short = Tower::new(vec![layer(ffn(), 1)], vec![kda(), kda()]);
     assert_eq!(short.expect_err("少一个记忆层").code(), Code::Invalid);
@@ -610,4 +596,5 @@ fn assembly_enforces_the_recipe_and_the_geometry() {
             .code(),
         Code::Invalid
     );
+}
 }

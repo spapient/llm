@@ -18,7 +18,7 @@ fn packed(name: &str, dims: [usize; 2], offset: usize) -> Entry {
     Entry::new(name, DType::U4, Shape::new(dims)).at(offset)
 }
 
-#[test]
+testkit::test_cases! {
 fn a_two_dimensional_entry_becomes_a_projection() {
     let model = Stack::from_header(&header(vec![entry("blk.0.attn_q.weight", [64, 32], 0)]))
         .expect("形状合法");
@@ -28,7 +28,6 @@ fn a_two_dimensional_entry_becomes_a_projection() {
     assert!(model.uncovered().is_empty());
 }
 
-#[test]
 fn the_entry_dtype_decides_the_format_not_a_global_default() {
     let model = Stack::from_header(&header(vec![entry("blk.0.attn_q.weight", [64, 32], 0)]))
         .expect("形状合法");
@@ -54,7 +53,6 @@ fn the_entry_dtype_decides_the_format_not_a_global_default() {
 }
 
 /// 一份全是 f32 的权重文件（真实 safetensors 最常见的形态）现在能全额计价。
-#[test]
 fn a_dense_model_is_priced_end_to_end() {
     let model = Stack::from_header(&header(vec![
         entry("blk.0.attn_q.weight", [64, 4096], 0),
@@ -70,7 +68,6 @@ fn a_dense_model_is_priced_end_to_end() {
     assert_eq!(floor.total().flops(), 2.0 * 2.0 * 64.0 * 4096.0);
 }
 
-#[test]
 fn a_packed_entry_without_a_group_is_reported_not_guessed() {
     let model = Stack::from_header(&header(vec![packed("blk.0.attn_q.weight", [64, 32], 0)]))
         .expect("形状合法");
@@ -83,7 +80,6 @@ fn a_packed_entry_without_a_group_is_reported_not_guessed() {
     );
 }
 
-#[test]
 fn entries_that_are_not_matrices_are_reported_not_dropped() {
     let model = Stack::from_header(&header(vec![
         Entry::new("blk.0.norm.weight", DType::F32, Shape::new([64])).at(0),
@@ -102,7 +98,6 @@ fn entries_that_are_not_matrices_are_reported_not_dropped() {
     );
 }
 
-#[test]
 fn the_model_floor_is_the_sum_of_its_layers() {
     let model = Stack::of(vec![
         Box::new(Linear::new("a", 32, 64).expect("合法")),
@@ -118,7 +113,6 @@ fn the_model_floor_is_the_sum_of_its_layers() {
     assert!(sum.read() > 0 && sum.write() > 0 && sum.flops() > 0.0);
 }
 
-#[test]
 fn an_annotated_layer_joins_the_same_sum() {
     let model = Stack::of(vec![
         Box::new(LmHead),
@@ -136,7 +130,6 @@ fn an_annotated_layer_joins_the_same_sum() {
     assert_eq!(floor.total(), head.plus(projection), "注解层没有第二条公式");
 }
 
-#[test]
 fn a_layer_without_a_legal_kernel_only_takes_itself_out() {
     // in = 8 不是量化分组的整数倍：这一层没有合法内核，但其余层照常相加。
     let model = Stack::of(vec![
@@ -159,7 +152,6 @@ fn a_layer_without_a_legal_kernel_only_takes_itself_out() {
     );
 }
 
-#[test]
 fn duplicate_names_after_stripping_the_suffix_are_rejected() {
     let error = Stack::from_header(&header(vec![
         entry("a.weight", [64, 32], 0),
@@ -169,12 +161,12 @@ fn duplicate_names_after_stripping_the_suffix_are_rejected() {
     assert!(error.to_string().contains("层名 `a` 重复"), "{error}");
 }
 
-#[test]
 fn a_zero_width_projection_is_rejected() {
     let error =
         Stack::from_header(&header(vec![entry("empty.weight", [0, 32], 0)])).expect_err("宽度为零");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("empty"), "{error}");
+}
 }
 
 /// 真实量化 checkout 的形状：4 位打包权重 + 每 `group` 个元素一个 f16 标度。
@@ -190,7 +182,7 @@ fn quantized(name: &str, out: usize, in_features: usize, groups: usize) -> Vec<E
     ]
 }
 
-#[test]
+testkit::test_cases! {
 fn quantized_bit_widths_are_explicit() {
     for (bits, format) in [
         (2, WeightFormat::int2(32)),
@@ -205,7 +197,6 @@ fn quantized_bit_widths_are_explicit() {
     );
 }
 
-#[test]
 fn a_packed_weight_and_its_scales_become_one_priced_layer() {
     // 128 个输入 / 4 个分组 = 每 32 个元素一个标度，正是内核声明的那个分组。
     let model =
@@ -223,7 +214,6 @@ fn a_packed_weight_and_its_scales_become_one_priced_layer() {
     assert_eq!(model.layers()[0].spca().ops(), [Linear::OP]);
 }
 
-#[test]
 fn a_group_the_kernel_does_not_declare_is_named_in_the_reason() {
     // 512 / 4 = 每 128 个元素一个标度：真实权重里很常见，但不是本内核声明的那一档。
     let model =
@@ -236,7 +226,6 @@ fn a_group_the_kernel_does_not_declare_is_named_in_the_reason() {
     assert!(reason.contains("32"), "也要说出内核声明的分组：{reason}");
 }
 
-#[test]
 fn a_packed_weight_without_scales_says_what_is_missing() {
     let model =
         Stack::from_header(&header(vec![packed("w.weight", [8, 32], 0)])).expect("文件合法");
@@ -249,7 +238,6 @@ fn a_packed_weight_without_scales_says_what_is_missing() {
     );
 }
 
-#[test]
 fn a_scale_that_contradicts_its_weight_stops_the_whole_stack() {
     // 输出维对不上：这不是"另一种量化方案"，是文件自相矛盾，算下去一定是错数。
     let entries = vec![
@@ -261,7 +249,6 @@ fn a_scale_that_contradicts_its_weight_stops_the_whole_stack() {
     assert!(error.to_string().contains("输出维 32"), "{error}");
 }
 
-#[test]
 fn a_declared_model_rejects_duplicate_names_too() {
     let one = Linear::new("blk.0", 32, 32).expect("合法");
     let two = Linear::new("blk.0", 32, 32).expect("合法");
@@ -269,7 +256,6 @@ fn a_declared_model_rejects_duplicate_names_too() {
     assert!(error.to_string().contains("blk.0"), "{error}");
 }
 
-#[test]
 fn a_quantized_entry_and_its_unpacked_view_declare_the_same_floor() {
     // 同一层权重的两种书写：解包视图（U4，第二维是元素数）与真实文件（U8 打包，第二维是字节数）。
     let packed_bytes = Entry::new("blk.0.q.weight", DType::U8, Shape::new([64, 64])).at(0);
@@ -293,7 +279,6 @@ fn a_quantized_entry_and_its_unpacked_view_declare_the_same_floor() {
     assert_eq!(a, b, "8 位条目的第二维是字节数，宽度必须由标度推出");
 }
 
-#[test]
 fn a_scale_with_no_matching_group_is_named_not_silently_priced() {
     // 打包 nibble：group = 128 个元素一组，而内核声明 32：不是同一个东西，必须点名。
     let weight = Entry::new("blk.0.q.weight", DType::U8, Shape::new([64, 64])).at(0);
@@ -313,6 +298,7 @@ fn a_scale_with_no_matching_group_is_named_not_silently_priced() {
         "理由要点名内核要求的分组：{}",
         floor.unpriced()[0]
     );
+}
 }
 
 /// 一份真实 LSTM 检查点：2 层、双向、隐宽 5、输入 16。
@@ -344,8 +330,8 @@ fn lstm_entries() -> Vec<Entry> {
     entries
 }
 
+testkit::test_cases! {
 /// 四件权重被认成**一次**循环层，而不是八次投影。
-#[test]
 fn a_recurrent_family_is_recognised_from_its_own_shapes() {
     let model = Stack::from_header(&header(lstm_entries())).expect("形状合法");
     assert_eq!(model.layers().len(), 1, "四件 × 层 × 方向只算一层");
@@ -365,7 +351,6 @@ fn a_recurrent_family_is_recognised_from_its_own_shapes() {
 }
 
 /// 缺一件就一件都不认：秩为 2 的 `weight_ih_l0` 不会被悄悄当成一个投影。
-#[test]
 fn a_partial_recurrent_family_is_reported_not_priced_as_a_projection() {
     let model = Stack::from_header(&header(vec![
         Entry::new("blk.lstm.weight_ih_l0", DType::F32, Shape::new([20, 16])).at(0),
@@ -380,4 +365,5 @@ fn a_partial_recurrent_family_is_reported_not_priced_as_a_projection() {
         ["blk.lstm.weight_ih_l0"],
         "认不出就如实报出：把它当投影会让层名与真实张量对不上"
     );
+}
 }

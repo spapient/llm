@@ -1,6 +1,6 @@
 use crate::{DType, Element, Order, Owned, Shape, Slice, Tensor, View, ViewMut, product};
 
-#[test]
+testkit::test_cases! {
 fn a_broadcast_axis_gets_stride_zero_and_reads_the_same_element() {
     let values = [1.0f32, 2.0];
     let row: View<'_, f32> = View::new(Shape::new([1, 2]), &values).expect("视图");
@@ -19,7 +19,6 @@ fn a_broadcast_axis_gets_stride_zero_and_reads_the_same_element() {
     assert!(row.broadcast(Shape::new([2])).is_none());
 }
 
-#[test]
 fn a_narrowed_view_still_borrows_the_callers_buf() {
     let values = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let view: View<'_, f32> = View::new(Shape::new([3, 2]), &values).expect("视图");
@@ -43,7 +42,6 @@ fn a_narrowed_view_still_borrows_the_callers_buf() {
     assert_eq!(empty.numel(), 0);
 }
 
-#[test]
 fn a_permuted_rank_cannot_panic_on_a_long_order() {
     let tensor: Tensor<&[f32], [usize; 2], f32> =
         Tensor::new([2, 2], [1.0f32, 2.0, 3.0, 4.0].as_slice()).expect("视图");
@@ -53,7 +51,6 @@ fn a_permuted_rank_cannot_panic_on_a_long_order() {
     );
 }
 
-#[test]
 fn a_broadcast_view_materialises_into_a_contiguous_tensor() {
     let buf = [1.0f32, 2.0];
     let row: View<'_, f32> = View::new(Shape::new([1, 2]), &buf[..]).expect("单行");
@@ -70,7 +67,6 @@ fn a_broadcast_view_materialises_into_a_contiguous_tensor() {
     assert_eq!(flat.dims(), [6]);
 }
 
-#[test]
 fn materialising_a_transpose_reorders_the_elements() {
     let buf = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let matrix: View<'_, f32> = View::new(Shape::new([2, 3]), &buf[..]).expect("2×3");
@@ -82,7 +78,6 @@ fn materialising_a_transpose_reorders_the_elements() {
     );
 }
 
-#[test]
 fn matrix_constructor_carries_two_axis_lengths() {
     let buf = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let view = View::matrix(2, 3, &buf[..]).expect("2×3");
@@ -93,7 +88,6 @@ fn matrix_constructor_carries_two_axis_lengths() {
     assert!(View::matrix(2, 2, &buf[..]).is_err());
 }
 
-#[test]
 fn mutable_matrix_constructor_carries_two_axis_lengths_and_writes_back() {
     let mut buf = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let mut view = ViewMut::matrix(2, 3, &mut buf[..]).expect("2×3");
@@ -106,13 +100,13 @@ fn mutable_matrix_constructor_carries_two_axis_lengths_and_writes_back() {
     assert!(ViewMut::matrix(2, 2, &mut other[..]).is_err());
 }
 
-#[test]
 fn a_contiguous_tensor_materialises_to_an_equal_copy() {
     let buf = [1.0f32, 2.0, 3.0, 4.0];
     let dense: View<'_, f32> = View::new(Shape::new([2, 2]), &buf[..]).expect("2×2");
     let copy = dense.to_contiguous();
     assert_eq!(copy.as_slice(), dense.as_slice());
     assert_eq!(copy.strides(), dense.strides());
+}
 }
 
 /// 0 到 11 的 3×4 连续张量：下标 = 行 * 4 + 列。
@@ -122,7 +116,7 @@ fn counted() -> Vec<f32> {
     (0..12).map(|i| i as f32).collect()
 }
 
-#[test]
+testkit::test_cases! {
 fn a_slice_advances_the_base_and_keeps_the_strides() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -134,7 +128,6 @@ fn a_slice_advances_the_base_and_keeps_the_strides() {
     assert_eq!(block.at([1, 1]), Some(6.0));
 }
 
-#[test]
 fn a_slice_outside_the_axes_or_the_rank_is_none() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -155,7 +148,6 @@ fn a_slice_outside_the_axes_or_the_rank_is_none() {
     assert!(view.slice([0..3, 0..4]).is_some(), "满段是合法的");
 }
 
-#[test]
 fn a_selected_axis_disappears_and_the_base_follows_the_idx() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -166,7 +158,6 @@ fn a_selected_axis_disappears_and_the_base_follows_the_idx() {
     assert_eq!(row.numel(), 4);
 }
 
-#[test]
 fn narrow_works_on_a_self_held_tensor_not_only_on_a_borrowed_view() {
     let tensor: Tensor<Owned<f32>> = Tensor::zeros(vec![3usize, 4]).expect("分配");
     let tail = tensor.narrow(0, 1, 2).expect("自持张量也能零拷贝切");
@@ -176,7 +167,6 @@ fn narrow_works_on_a_self_held_tensor_not_only_on_a_borrowed_view() {
     assert_eq!(tail.numel(), 8);
 }
 
-#[test]
 fn materialising_a_narrowed_view_starts_at_its_base() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -186,7 +176,6 @@ fn materialising_a_narrowed_view_starts_at_its_base() {
     assert_eq!(solid.as_slice(), [4.0f32, 5.0, 6.0, 7.0]);
 }
 
-#[test]
 fn squeeze_only_drops_an_axis_that_is_really_a_singleton() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -201,7 +190,6 @@ fn squeeze_only_drops_an_axis_that_is_really_a_singleton() {
     assert_eq!(flat.base(), 0);
 }
 
-#[test]
 fn unsqueezing_adds_a_singleton_axis_without_moving_anything() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -213,7 +201,6 @@ fn unsqueezing_adds_a_singleton_axis_without_moving_anything() {
     assert!(view.unsqueeze::<Vec<usize>>(3).is_none(), "轴不能超过秩");
 }
 
-#[test]
 fn flatten_merges_a_run_that_is_contiguous_in_storage_and_refuses_otherwise() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -234,7 +221,6 @@ fn flatten_merges_a_run_that_is_contiguous_in_storage_and_refuses_otherwise() {
     );
 }
 
-#[test]
 fn a_transposed_pair_of_axes_cannot_be_flattened() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
@@ -250,7 +236,6 @@ fn a_transposed_pair_of_axes_cannot_be_flattened() {
     );
 }
 
-#[test]
 fn a_broadcast_axis_is_honestly_not_contiguous() {
     let values = [1.0f32, 2.0];
     let view: View<'_, f32> = View::new(Shape::new([2]), &values).expect("视图");
@@ -259,7 +244,6 @@ fn a_broadcast_axis_is_honestly_not_contiguous() {
     assert!(!wide.is_contiguous(), "步长 0 的重复轴不可能是行主序紧凑");
 }
 
-#[test]
 fn slice_fill_touches_only_the_window() {
     let mut tensor: Tensor<Owned<f32>> = Tensor::zeros(vec![3usize, 4]).expect("分配");
     tensor
@@ -275,7 +259,6 @@ fn slice_fill_touches_only_the_window() {
     );
 }
 
-#[test]
 fn a_stepped_window_can_be_written_in_place() {
     let mut tensor: Tensor<Owned<f32>> = Tensor::zeros(vec![2usize, 4]).expect("分配");
     // 每 2 列写一个：两行的第 0、2 列。
@@ -302,7 +285,6 @@ fn a_stepped_window_can_be_written_in_place() {
     );
 }
 
-#[test]
 fn slice_assign_follows_the_logical_order_even_when_strided() {
     let solid: Tensor<Owned<f32>> =
         Tensor::new(vec![3usize, 4], Owned::from(counted())).expect("自持张量");
@@ -321,7 +303,6 @@ fn slice_assign_follows_the_logical_order_even_when_strided() {
     );
 }
 
-#[test]
 fn flip_reverses_only_the_named_axes() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -338,7 +319,6 @@ fn flip_reverses_only_the_named_axes() {
     assert_eq!(both[11], 0.0);
 }
 
-#[test]
 fn flip_is_idempotent_where_it_should_be() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -352,7 +332,6 @@ fn flip_is_idempotent_where_it_should_be() {
     assert_eq!(view.flip([0]).flip([0]).to_vec(), values, "翻两次复原");
 }
 
-#[test]
 fn flip_of_a_strided_view_reads_the_logical_order() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -365,7 +344,6 @@ fn flip_of_a_strided_view_reads_the_logical_order() {
     assert!(turned.flip([0]).is_contiguous(), "物化后紧凑");
 }
 
-#[test]
 fn a_stepped_slice_reads_every_other_element_without_moving_data() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -379,7 +357,6 @@ fn a_stepped_slice_reads_every_other_element_without_moving_data() {
     );
 }
 
-#[test]
 fn a_stepped_view_writes_through_its_own_steps() {
     let solid: Tensor<Owned<f32>> =
         Tensor::new(vec![3, 4], Owned::from(counted())).expect("自持张量");
@@ -396,7 +373,6 @@ fn a_stepped_view_writes_through_its_own_steps() {
     );
 }
 
-#[test]
 fn a_step_of_zero_or_an_inverted_range_is_none() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -410,7 +386,6 @@ fn a_step_of_zero_or_an_inverted_range_is_none() {
     );
 }
 
-#[test]
 fn chunks_split_into_borrowed_views_without_copying() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -426,7 +401,6 @@ fn chunks_split_into_borrowed_views_without_copying() {
     assert_eq!(parts[1].to_vec(), vec![8.0f32, 9.0, 10.0, 11.0]);
 }
 
-#[test]
 fn chunks_of_a_transposed_view_keep_the_layout() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -438,7 +412,6 @@ fn chunks_of_a_transposed_view_keep_the_layout() {
     assert_eq!(parts[2].to_vec(), vec![8.0f32, 9.0, 10.0, 11.0], "第 3 列");
 }
 
-#[test]
 fn diagonal_folds_two_axes_by_adding_their_strides() {
     let values = counted();
     let matrix: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -450,7 +423,6 @@ fn diagonal_folds_two_axes_by_adding_their_strides() {
     assert_eq!(diag.as_slice().as_ptr(), raw, "同一块存储");
 }
 
-#[test]
 fn diagonal_of_a_transposed_view_reads_the_same_elements() {
     let values = counted();
     let matrix: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -460,7 +432,6 @@ fn diagonal_of_a_transposed_view_reads_the_same_elements() {
     assert_eq!(diag.to_vec(), vec![0.0f32, 5.0, 10.0]);
 }
 
-#[test]
 fn diagonal_rejects_the_same_axis_or_an_axis_out_of_range() {
     let values = counted();
     let square = || -> View<'_, f32> { View::new(Shape::new([3, 4]), &values).expect("视图") };
@@ -471,7 +442,6 @@ fn diagonal_rejects_the_same_axis_or_an_axis_out_of_range() {
     assert!(square().diagonal::<[usize; 1]>(0, 9).is_none(), "轴越界");
 }
 
-#[test]
 fn diagonal_through_a_window_keeps_the_parent_offset() {
     let values = counted();
     let matrix: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -480,7 +450,6 @@ fn diagonal_through_a_window_keeps_the_parent_offset() {
     assert_eq!(diag.to_vec(), vec![1.0f32, 6.0, 11.0], "起点已前移一位");
 }
 
-#[test]
 fn split_takes_the_sizes_it_is_given_and_clamps_the_last_one() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -499,7 +468,6 @@ fn split_takes_the_sizes_it_is_given_and_clamps_the_last_one() {
     assert_eq!(view.split(0, [9]).len(), 1, "首段就超长：夹成整轴");
 }
 
-#[test]
 fn unbind_gives_rank_minus_one_views_over_the_same_storage() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -519,7 +487,6 @@ fn unbind_gives_rank_minus_one_views_over_the_same_storage() {
     );
 }
 
-#[test]
 fn unbind_views_write_through_to_the_source() {
     let owned: Tensor<Owned<f32>, Vec<usize>, f32> =
         Tensor::new(vec![3usize, 4], Owned::from(counted())).expect("自持张量");
@@ -530,7 +497,6 @@ fn unbind_views_write_through_to_the_source() {
     assert_eq!(rows[0].to_vec(), vec![0.0f32, 1.0, 2.0, 3.0]);
 }
 
-#[test]
 fn movedim_relocates_one_axis_and_leaves_the_others_in_order() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([2, 2, 3]), &values).expect("视图");
@@ -546,7 +512,6 @@ fn movedim_relocates_one_axis_and_leaves_the_others_in_order() {
     assert_eq!(moved.to_vec(), permuted.to_vec());
 }
 
-#[test]
 fn movedim_is_identity_when_the_axis_stays_and_none_when_out_of_range() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -558,7 +523,6 @@ fn movedim_is_identity_when_the_axis_stays_and_none_when_out_of_range() {
     assert!(view.movedim(0, 2).is_none(), "目标位置越界");
 }
 
-#[test]
 fn shape_operators_reject_out_of_range_axes_without_panicking() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
@@ -587,7 +551,6 @@ fn shape_operators_reject_out_of_range_axes_without_panicking() {
     assert!(view.unbind::<Vec<usize>>(9).is_empty(), "unbind 轴越界为空");
 }
 
-#[test]
 fn borrowed_mutable_views_support_the_same_window_writes() {
     let mut values = [0i32; 6];
     {
@@ -599,7 +562,6 @@ fn borrowed_mutable_views_support_the_same_window_writes() {
     assert_eq!(values, [0, 7, 7, 8, 9, 0]);
 }
 
-#[test]
 fn rank_algebra_has_no_sixteen_axis_ceiling() {
     let view: View<'_, u8> = View::new(vec![1; 20], &[9]).expect("20 秩视图");
     let lifted = view.unsqueeze::<Vec<usize>>(20).expect("提升到 21 秩");
@@ -612,7 +574,6 @@ fn rank_algebra_has_no_sixteen_axis_ceiling() {
     assert_eq!(scalar.to_vec(), [9]);
 }
 
-#[test]
 fn stride_arithmetic_overflow_is_rejected_without_panicking() {
     let stepped: View<'_, u8> =
         View::strided(vec![1], vec![usize::MAX], &[3]).expect("单例轴步长不可达但合法");
@@ -627,11 +588,12 @@ fn stride_arithmetic_overflow_is_rejected_without_panicking() {
         "对角步长加法必须受检"
     );
 }
+}
 
 /// 编译期秩 2 的借来视图。
 type Fix2<'a> = Tensor<&'a [f32], [usize; 2], f32>;
 
-#[test]
+testkit::test_cases! {
 fn typed_tensor_is_contiguous_and_typed() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -645,13 +607,11 @@ fn typed_tensor_is_contiguous_and_typed() {
     assert_eq!(tensor.at([2, 0]), None, "行越界");
 }
 
-#[test]
 fn typed_tensor_rejects_mismatched_buf() {
     let error = Tensor::<&[f32], [usize; 2], f32>::new([2, 3], &[1.0f32; 5][..]).unwrap_err();
     assert_eq!(error.code(), diagnostic::Code::Invalid);
 }
 
-#[test]
 fn transpose_is_zero_copy_metadata() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -666,6 +626,7 @@ fn transpose_is_zero_copy_metadata() {
         std::ptr::eq(transposed.as_slice().as_ptr(), data.as_ptr()),
         "转置是元数据重排，缓冲一个字节都没动"
     );
+}
 }
 
 #[test]
@@ -686,7 +647,7 @@ fn permute_reorders_axes() {
     assert!(tensor.permute([0, 1]).is_none(), "轴数不符不是排列");
 }
 
-#[test]
+testkit::test_cases! {
 fn reshape_preserves_element_count_and_may_change_rank() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -695,7 +656,6 @@ fn reshape_preserves_element_count_and_may_change_rank() {
     assert!(tensor.reshape::<[usize; 2]>([3, 3]).is_none(), "元素数不符");
 }
 
-#[test]
 fn reshape_needs_contiguous_layout() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -703,20 +663,17 @@ fn reshape_needs_contiguous_layout() {
     assert!(transposed.reshape::<[usize; 1]>([6]).is_none());
 }
 
-#[test]
 fn strided_rejects_out_of_reach_layout() {
     let error = Tensor::<&[f32], [usize; 2], f32>::strided([2, 3], [6, 2], &[0.0f32; 6])
         .expect_err("最高偏移越界");
     assert_eq!(error.code(), diagnostic::Code::Invalid);
 }
 
-#[test]
 fn zero_element_view_needs_empty_buf() {
     let error = Tensor::<&[f32], [usize; 2], f32>::new([0, 3], &[1.0f32][..]).unwrap_err();
     assert_eq!(error.code(), diagnostic::Code::Invalid);
 }
 
-#[test]
 fn row_slices_a_contiguous_2d_view() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -725,7 +682,6 @@ fn row_slices_a_contiguous_2d_view() {
 }
 
 /// 编译期秩与运行期秩共用同一套累积规则：同一个形状在两个见证下必须算出逐轴相等的步长。
-#[test]
 fn static_rank_contiguous_matches_the_runtime_strides() {
     let data = [0.0f32; 24];
     let fixed: Tensor<&[f32], [usize; 3], f32> =
@@ -735,14 +691,12 @@ fn static_rank_contiguous_matches_the_runtime_strides() {
     assert_eq!(fixed.numel(), product(&[2usize, 3, 4]));
 }
 
-#[test]
 fn element_types_are_compile_time_constants() {
     assert_eq!(<f32 as Element>::DTYPE, DType::F32);
     assert_eq!(<i8 as Element>::DTYPE, DType::I8);
     assert_eq!(<u8 as Element>::DTYPE, DType::U8);
 }
 
-#[test]
 fn a_shape_view_keeps_the_compile_time_rank() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -755,7 +709,6 @@ fn a_shape_view_keeps_the_compile_time_rank() {
     assert_eq!(block.at([0, 1]), Some(3.0));
 }
 
-#[test]
 fn rank_changing_views_need_the_target_witness_and_the_length_is_checked() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -777,7 +730,6 @@ fn rank_changing_views_need_the_target_witness_and_the_length_is_checked() {
     assert_eq!(back.as_slice(), tensor.as_slice());
 }
 
-#[test]
 fn typed_tensor_keeps_its_rank_through_narrow_and_slice() {
     let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
@@ -793,4 +745,5 @@ fn typed_tensor_keeps_its_rank_through_narrow_and_slice() {
     assert_eq!(corner.dims(), [1, 2]);
     assert_eq!(corner.strides(), [3, 1]);
     assert_eq!(corner.base(), 3, "两次切片的起点偏移累加");
+}
 }

@@ -82,7 +82,7 @@ fn contract_round_trip(tokenizer: &dyn Tokenizer, text: &str) {
     );
 }
 
-#[test]
+testkit::test_cases! {
 fn contract_id_range_holds_for_both_impls() {
     let bpe = bpe_fixture();
     let unigram = unigram_fixture();
@@ -97,7 +97,6 @@ fn contract_id_range_holds_for_both_impls() {
     }
 }
 
-#[test]
 fn contract_out_of_range_rejected_for_both_impls() {
     let bpe = bpe_fixture();
     let unigram = unigram_fixture();
@@ -106,7 +105,6 @@ fn contract_out_of_range_rejected_for_both_impls() {
     contract_out_of_range_rejected(&unigram);
 }
 
-#[test]
 fn contract_empty_sequence_for_both_impls() {
     let bpe = bpe_fixture();
     let unigram = unigram_fixture();
@@ -115,7 +113,6 @@ fn contract_empty_sequence_for_both_impls() {
     contract_empty_round_trip(&unigram);
 }
 
-#[test]
 fn contract_count_matches_for_both_impls() {
     let bpe = bpe_fixture();
     let unigram = unigram_fixture();
@@ -130,7 +127,6 @@ fn contract_count_matches_for_both_impls() {
     }
 }
 
-#[test]
 fn contract_round_trip_for_encodable_texts() {
     let bpe = bpe_fixture();
     let unigram = unigram_fixture();
@@ -154,7 +150,6 @@ fn contract_round_trip_for_encodable_texts() {
     }
 }
 
-#[test]
 fn text_round_trips_through_the_reference_tokenizer() {
     // 覆盖 ASCII、多字节 UTF-8、空串与需要组合的边界文本。
     let texts = ["", "a", "hé", "中文", "🙂", "line\nbreak\ttab"];
@@ -169,7 +164,6 @@ fn text_round_trips_through_the_reference_tokenizer() {
     }
 }
 
-#[test]
 fn every_encodable_token_is_inside_the_declared_vocabulary() {
     let text = "混合 ascii 与中文 🙂";
     for token in Bytes.encode(text).expect("编码") {
@@ -180,7 +174,6 @@ fn every_encodable_token_is_inside_the_declared_vocabulary() {
     }
 }
 
-#[test]
 fn ids_outside_the_vocabulary_are_rejected_not_wrapped() {
     let error = Bytes
         .decode(&[Token::new(256)])
@@ -193,7 +186,6 @@ fn ids_outside_the_vocabulary_are_rejected_not_wrapped() {
     );
 }
 
-#[test]
 fn a_byte_sequence_that_is_not_utf8_is_rejected_with_its_cause() {
     // 0xE4 是三个字节序列的开头，单独出现不构成合法 UTF-8。
     let error = Bytes
@@ -203,7 +195,6 @@ fn a_byte_sequence_that_is_not_utf8_is_rejected_with_its_cause() {
     assert!(!error.message().trim().is_empty());
 }
 
-#[test]
 fn an_empty_sequence_decodes_to_the_empty_string() {
     assert_eq!(
         Bytes.decode(&[]).expect("空序列合法"),
@@ -212,7 +203,6 @@ fn an_empty_sequence_decodes_to_the_empty_string() {
     );
 }
 
-#[test]
 fn fingerprint_identifies_the_byte_vocabulary() {
     let fingerprint = Bytes.fingerprint();
     assert_eq!(fingerprint.vocab_size(), Bytes.vocab_size());
@@ -220,7 +210,6 @@ fn fingerprint_identifies_the_byte_vocabulary() {
     assert_eq!(fingerprint.hex().len(), 16);
 }
 
-#[test]
 fn count_matches_the_encoded_length_without_a_second_guess() {
     for text in ["", "a", "hé", "中文", "🙂"] {
         let encoded = Bytes.encode(text).expect("编码");
@@ -228,7 +217,6 @@ fn count_matches_the_encoded_length_without_a_second_guess() {
     }
 }
 
-#[test]
 fn detailed_encoding_offsets_line_up_with_bytes() {
     let encoding = Bytes.encode_detailed("ab").expect("详细编码");
     assert_eq!(encoding.ids().len(), encoding.offsets().len());
@@ -241,14 +229,12 @@ fn detailed_encoding_offsets_line_up_with_bytes() {
     );
 }
 
-#[test]
 fn reverse_lookup_round_trips_single_bytes() {
     let token = Bytes.lookup(b"Z").expect("查表").expect("命中");
     assert_eq!(token.id(), u32::from(b'Z'));
     assert_eq!(Bytes.piece(token).expect("反查"), Some(vec![b'Z']));
 }
 
-#[test]
 fn stream_decodes_generated_tokens_one_chunk_at_a_time() {
     let mut stream = DecoderStream::new();
     // 生成侧逐块吐字节；多字节字符跨块时缓冲负责拼合。
@@ -257,9 +243,9 @@ fn stream_decodes_generated_tokens_one_chunk_at_a_time() {
     assert_eq!(stream.finish().expect("收尾"), "");
 }
 
-#[test]
 fn baseline_has_no_special_tokens() {
     let special = Bytes.special_tokens();
     assert!(special.is_empty());
     assert!(!special.is_special(0));
+}
 }

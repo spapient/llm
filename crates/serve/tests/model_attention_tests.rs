@@ -1,7 +1,7 @@
 use super::*;
 
+testkit::test_cases! {
 /// 两行批整块归一化：`gamma` 按行宽复用，两段独立 RMS、互不串段；参考逐行 `forward` 重算。
-#[test]
 fn rmsnorm_groups_batch_rows_against_the_single_row_reference() {
     let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let gamma = [1.0, 1.0, 1.0];
@@ -25,7 +25,6 @@ fn rmsnorm_groups_batch_rows_against_the_single_row_reference() {
 }
 
 /// 两段批 RoPE：第二路位置表逐序列给位置，段内独立旋转、互不串段；参考逐段 `forward_heads` 重算。
-#[test]
 fn rope_rotates_batch_segments_by_the_position_table() {
     let x = [1.0, 2.0, 3.0, 4.0];
     let positions = [2.0, 5.0];
@@ -58,7 +57,6 @@ fn rope_rotates_batch_segments_by_the_position_table() {
 }
 
 /// 两段批 decode 注意力：第四路段长表给各段历史行数，段间紧排、互不串段；参考逐段 `decode_forward_heads` 重算。
-#[test]
 fn decode_attention_groups_batch_segments_by_the_history_table() {
     let (heads, d, q_rows) = (1usize, 2usize, 1usize);
     let hist = [2usize, 2];
@@ -108,7 +106,6 @@ fn decode_attention_groups_batch_segments_by_the_history_table() {
 
 /// 注意力块 decode 一步：embed → q/k/v → decode 注意力 → o → 残差旁路，与独立参考对拍；
 /// 当前步 K/V 写回页行并按 `[k|v]` 切回对拍。
-#[test]
 fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     let (vocab, hidden, kv) = (8, 8, 8);
     let hist = 1;
@@ -139,7 +136,6 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
 }
 
 /// 两条序列同批走块链整批前向（`logits_batch`）：行序对齐准入序，各自对拍参考块，KV 写回各归各的页行。
-#[test]
 fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
     let (mut model, mut batch, sequences, histories, table, projections) = two_seq_fixture(8, 8, 8);
     let history_refs: Vec<(&[f32], &[f32])> = histories
@@ -164,7 +160,6 @@ fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
 
 /// 多头（`heads = kv / head_dim = 2`）两条序列同批走块链整批前向：头优先段内重排与写回按
 /// 头宽分段，两行各自对拍参考块，KV 写回各归各的页行。
-#[test]
 fn logits_batch_runs_two_multi_head_sequences_with_their_own_kv() {
     let (mut model, mut batch, sequences, histories, table, projections) =
         two_seq_fixture(16, 8, 4);
@@ -190,7 +185,6 @@ fn logits_batch_runs_two_multi_head_sequences_with_their_own_kv() {
 
 /// 不等长历史（ragged）两条序列同批：A 缓存 1 行、B 缓存 2 行，段紧排游标按各自 `hist_b` 累计；
 /// 两行 logits 与各自参考块对拍，KV 写回互不串段。
-#[test]
 fn logits_batch_runs_two_sequences_with_unequal_history_lengths() {
     let (vocab, hidden, kv) = (8, 8, 8);
 
@@ -240,7 +234,6 @@ fn logits_batch_runs_two_sequences_with_unequal_history_lengths() {
 }
 
 /// 四条序列同批走块链整批前向：行序对齐准入序，四段历史紧排、四行输出拆回、KV 各归各页行。
-#[test]
 fn logits_batch_runs_four_sequences_in_input_order() {
     let (vocab, hidden, kv) = (8, 8, 8);
     let hist = 1;
@@ -283,7 +276,6 @@ fn logits_batch_runs_four_sequences_in_input_order() {
 }
 
 /// 块内一个投影条目缺失：装配期按名报 `Missing`。
-#[test]
 fn a_missing_block_projection_weight_is_reported_at_assembly() {
     let stack = Stack::of(vec![Box::new(
         AttentionBlock::new("blk.0", 8, 8, 8, 4, AttentionAlgo::Naive, WeightFormat::F32)
@@ -300,7 +292,6 @@ fn a_missing_block_projection_weight_is_reported_at_assembly() {
 }
 
 /// 上一层输出宽度与块隐藏宽度不符：装配期报 `Invalid`。
-#[test]
 fn a_block_width_chain_break_is_rejected_at_assembly() {
     let stack = embed_block_stack(8, 4, 8, 4);
     let mut params = block_zero_params();
@@ -310,7 +301,6 @@ fn a_block_width_chain_break_is_rejected_at_assembly() {
 }
 
 /// 块内权重元素数与 `in × out` 不符：装配期报 `Invalid`。
-#[test]
 fn a_block_weight_length_mismatch_is_rejected_at_assembly() {
     let stack = Stack::of(vec![Box::new(
         AttentionBlock::new("blk.0", 8, 8, 8, 4, AttentionAlgo::Naive, WeightFormat::F32)
@@ -329,7 +319,6 @@ fn a_block_weight_length_mismatch_is_rejected_at_assembly() {
 
 /// 量化 int4 注意力块 decode：四路投影走打包字节 + 标度，q/k/v/o 输出仍是 f32（`gemv_i4` 输出
 /// 浮点），KV 页行写回不交叠；与独立 `gemv_i4`/RoPE/注意力/残差串行参考对拍。
-#[test]
 fn a_quantized_attention_block_decodes_against_the_reference() {
     let (vocab, hidden, kv) = (8, 32, 32);
     let head_dim = kv;
@@ -341,22 +330,7 @@ fn a_quantized_attention_block_decodes_against_the_reference() {
     let (wv, sv) = quant_projection(kv, hidden, 2);
     let (wo, so) = quant_projection(hidden, kv, 3);
 
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
-        Box::new(
-            AttentionBlock::new(
-                "blk.0",
-                hidden,
-                kv,
-                head_dim,
-                4,
-                AttentionAlgo::Naive,
-                WeightFormat::INT4,
-            )
-            .expect("层"),
-        ),
-    ])
-    .expect("栈");
+    let stack = embed_block_stack_dim(vocab, hidden, kv, head_dim, 4, WeightFormat::INT4);
     let mut params = Params::new();
     params.insert("tok_emb.weight", table.clone());
     params.insert_quantized(
@@ -408,7 +382,6 @@ fn a_quantized_attention_block_decodes_against_the_reference() {
 
 /// 多头展平（`kv_width = heads · head_dim`）端到端：嵌入 → q/k/v + 分段 RoPE → 多头 decode 注意力 →
 /// o 投影 → 残差；CPU 参考数值链按同一头优先块布局串行重算并对拍，K/V 页行回环一致。
-#[test]
 fn a_multi_head_block_decodes_against_the_reference() {
     let (vocab, hidden, kv, head_dim) = (8, 8, 16, 8);
     let hist = 1;
@@ -418,22 +391,7 @@ fn a_multi_head_block_decodes_against_the_reference() {
     let (hist_k, hist_v) = history_kv(kv);
     let history = history_row(&hist_k, &hist_v);
 
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
-        Box::new(
-            AttentionBlock::new(
-                "blk.0",
-                hidden,
-                kv,
-                head_dim,
-                4,
-                AttentionAlgo::Naive,
-                WeightFormat::F32,
-            )
-            .expect("层"),
-        ),
-    ])
-    .expect("栈");
+    let stack = embed_block_stack_dim(vocab, hidden, kv, head_dim, 4, WeightFormat::F32);
     let params = block_params(
         table.clone(),
         wq.clone(),
@@ -460,4 +418,5 @@ fn a_multi_head_block_decodes_against_the_reference() {
     assert_close(&produced, &reference);
 
     assert_kv_row(&batch, sequence.len(), kv, &k_rot, &v);
+}
 }

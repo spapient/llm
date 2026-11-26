@@ -70,7 +70,7 @@ fn dirs(root: &std::path::Path) -> Dirs {
     Dirs::under(root)
 }
 
-#[test]
+testkit::test_cases! {
 fn declared_traffic_beyond_the_fast_capacity_fails_the_build() {
     let op = declared_bytes(1_048_576);
     let error = contract(&op, &profile("cpu"), &declared_path(&op)).unwrap_err();
@@ -79,7 +79,6 @@ fn declared_traffic_beyond_the_fast_capacity_fails_the_build() {
     assert!(error.to_string().contains("524288"), "{error}");
 }
 
-#[test]
 fn swizzle_beyond_the_bank_count_fails_the_build() {
     let op = declared_swizzle();
     let error = contract(&op, &profile("cpu"), &declared_path(&op)).unwrap_err();
@@ -87,7 +86,6 @@ fn swizzle_beyond_the_bank_count_fails_the_build() {
     assert!(error.to_string().contains("布局槽位 `w`"), "{error}");
 }
 
-#[test]
 fn the_contract_reports_the_numbers_it_compared() {
     let op = builtin();
     let uses = contract(&op, &profile("cpu"), &cpu_path(&op)).expect("内置声明在容量内");
@@ -103,7 +101,6 @@ fn the_contract_reports_the_numbers_it_compared() {
     );
 }
 
-#[test]
 fn a_cached_source_cannot_exempt_the_declaration_from_the_contract() {
     // 声明的字节数只影响判定、不影响源文本，所以它不在缓存键里。先按合法声明落一次盘，
     // 再只把字节数改到超出容量：键不变、缓存必然命中——契约仍必须重新判定。
@@ -124,6 +121,7 @@ fn a_cached_source_cannot_exempt_the_declaration_from_the_contract() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+}
 
 /// 本机实测的工具链（本机没有编译器时返回 `None`，用例跳过）。
 fn tool() -> Option<Toolchain> {
@@ -143,8 +141,8 @@ fn built(op: &OpDecl, dirs: &Dirs) -> (CacheKey, String, Sample) {
     (key, harness, sample)
 }
 
+testkit::test_cases! {
 #[cfg(unix)]
-#[test]
 fn a_second_execution_needs_neither_the_compiler_nor_a_rebuild() {
     // 用一份"转调真正的 cc"的脚本充当编译器：第一次真的编，删掉脚本后第二次必须命中
     // 产物——真去找编译器就会以 `io` 失败，于是"没调用编译器"这件事是可观测的。
@@ -198,7 +196,6 @@ fn a_second_execution_needs_neither_the_compiler_nor_a_rebuild() {
 }
 
 #[cfg(unix)]
-#[test]
 fn a_new_compiler_version_does_not_reuse_the_old_artifact() {
     // 同一份源文本、同一个主函数，只把 `--version` 换掉：必须重编。这是"产物身份带实测
     // 工具链"的可观测后果——此前身份只有命令名，升级编译器会命中旧代码生成。
@@ -249,7 +246,6 @@ fn a_new_compiler_version_does_not_reuse_the_old_artifact() {
 /// 换一组编译参数不许复用旧产物：见证没有 `CacheKey`，参数只能由调用方给；少了这一项，档案里改一次
 /// `[compile].flags` 就会复用一个不再会被编出来的程序。
 #[cfg(unix)]
-#[test]
 fn a_new_flag_set_does_not_reuse_the_witness_binary() {
     let Some(tool) = tool() else {
         return;
@@ -284,7 +280,6 @@ fn a_new_flag_set_does_not_reuse_the_witness_binary() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-#[test]
 fn the_artifact_cache_leaves_the_work_directory_empty() {
     let Some(tool) = tool() else {
         return;
@@ -304,7 +299,6 @@ fn the_artifact_cache_leaves_the_work_directory_empty() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-#[test]
 fn without_a_compiler_a_missing_artifact_is_an_explicit_failure() {
     let root = std::env::temp_dir().join(format!("cutile-no-artifact-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -319,7 +313,6 @@ fn without_a_compiler_a_missing_artifact_is_an_explicit_failure() {
 }
 
 #[cfg(unix)]
-#[test]
 fn two_compilers_worth_of_artifacts_are_not_chosen_between() {
     // 没有编译器时只在"唯一一份"产物上复用：多份候选就是替用户选编译器，也就替 `bench`
     // 决定了耗时的来历。用两份假产物把这条判定单独钉住（不需要真编译器）。
@@ -353,7 +346,6 @@ fn two_compilers_worth_of_artifacts_are_not_chosen_between() {
 }
 
 /// 同一参考声明经后端调优后，实际发射正文与 AST 缓存指纹同步变化。
-#[test]
 fn source_applies_backend_tuning_and_separates_cache_fingerprints() {
     let root = std::env::temp_dir().join(format!("cutile-backend-kernel-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -375,4 +367,5 @@ fn source_applies_backend_tuning_and_separates_cache_fingerprints() {
     assert_ne!(host_key.ast_hash, device_key.ast_hash);
 
     let _ = std::fs::remove_dir_all(&root);
+}
 }

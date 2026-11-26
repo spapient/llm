@@ -12,7 +12,7 @@ fn quiet(weights: Vec<i8>, scale: Vec<f32>, inputs: usize, outputs: usize) -> Sp
     Spiking::new(weights, scale, inputs, outputs, 1.0e6, 0.0, 0.0).expect("几何合法")
 }
 
-#[test]
+testkit::test_cases! {
 fn integer_accumulation_is_exact_against_the_f32_dot() {
     let layer = quiet(vec![1, -2, 3, 4], vec![1.0, 1.0], 2, 2);
     let mut state = layer.membrane();
@@ -27,7 +27,6 @@ fn integer_accumulation_is_exact_against_the_f32_dot() {
     assert_eq!(out, [0, 0]);
 }
 
-#[test]
 fn no_pulses_leave_every_membrane_untouched() {
     let layer = quiet(vec![5, 5], vec![2.0], 2, 1);
     let mut state = layer.membrane();
@@ -42,7 +41,6 @@ fn no_pulses_leave_every_membrane_untouched() {
     assert_eq!(state.potential()[0].to_bits(), 0.0f32.to_bits());
 }
 
-#[test]
 fn a_potential_over_the_threshold_fires_and_resets() {
     let layer = Spiking::new(vec![1], vec![1.0], 1, 1, 1.0, 0.0, -0.5).expect("几何合法");
     let mut state = layer.membrane();
@@ -52,7 +50,6 @@ fn a_potential_over_the_threshold_fires_and_resets() {
     assert_eq!(state.potential()[0].to_bits(), (-0.5f32).to_bits());
 }
 
-#[test]
 fn leak_shapes_the_membrane_between_steps() {
     let layer = Spiking::new(vec![1], vec![1.0], 1, 1, 4.0, 0.5, 0.0).expect("几何合法");
     let mut state = layer.membrane();
@@ -63,7 +60,6 @@ fn leak_shapes_the_membrane_between_steps() {
     assert_eq!(state.potential()[0].to_bits(), 1.5f32.to_bits());
 }
 
-#[test]
 fn the_event_path_and_the_dense_path_agree_bitwise() {
     let layer = quiet(vec![2, -1, 4, 3, -5, 1], vec![0.5, 2.0], 3, 2);
     let events = Encoder::new(0.5f32, 1)
@@ -89,7 +85,6 @@ fn the_event_path_and_the_dense_path_agree_bitwise() {
     assert_eq!(driven.potential(), dense_state.potential());
 }
 
-#[test]
 fn the_count_matches_the_emitted_spikes() {
     let layer =
         Spiking::new(vec![1, 1, -1], vec![1.0, 1.0, 1.0], 1, 3, 1.0, 0.0, 0.0).expect("几何合法");
@@ -101,7 +96,6 @@ fn the_count_matches_the_emitted_spikes() {
     assert_eq!(fired, out.iter().filter(|&&s| s == 1).count());
 }
 
-#[test]
 fn events_of_another_width_are_rejected() {
     let layer = quiet(vec![1, 1], vec![1.0], 2, 1);
     let events = Encoder::new(1.0f32, 1)
@@ -114,7 +108,6 @@ fn events_of_another_width_are_rejected() {
     assert_eq!(state.potential()[0].to_bits(), 0.0f32.to_bits());
 }
 
-#[test]
 fn geometry_failures_are_rejected_before_any_object_exists() {
     assert!(Spiking::new(vec![1], vec![1.0], 0, 1, 1.0, 0.0, 0.0).is_err());
     assert!(Spiking::new(vec![1], vec![1.0], 1, 0, 1.0, 0.0, 0.0).is_err());
@@ -122,13 +115,11 @@ fn geometry_failures_are_rejected_before_any_object_exists() {
     assert!(Spiking::new(vec![1, 1], vec![1.0, 2.0], 1, 1, 1.0, 0.0, 0.0).is_err());
 }
 
-#[test]
 fn an_input_width_that_would_overflow_the_accumulator_is_rejected() {
     let wide = i32::MAX as usize / WEIGHT_MAGNITUDE + 1;
     assert!(Spiking::new(Vec::new(), vec![1.0], wide, 1, 1.0, 0.0, 0.0).is_err());
 }
 
-#[test]
 fn dynamics_outside_the_lif_range_are_rejected() {
     let base = (vec![1i8], vec![1.0f32], 1usize, 1usize);
     let build = |threshold, leak, reset| {
@@ -144,7 +135,6 @@ fn dynamics_outside_the_lif_range_are_rejected() {
     assert!(build(1.0, 0.0, -0.5).is_ok());
 }
 
-#[test]
 fn dense_pulses_outside_the_ternary_set_are_rejected() {
     let layer = quiet(vec![1, 1], vec![1.0], 2, 1);
     let mut state = layer.membrane();
@@ -165,7 +155,6 @@ fn dense_pulses_outside_the_ternary_set_are_rejected() {
 ///
 /// 注意两份耗时里都含相同的一份固定开销（`outputs` 次反量化 + LIF 推进），因此加速比**低于**
 /// 乘加比；这条只报数，判决仍归 `tools::card` 的协议卡。
-#[test]
 #[ignore = "E14 事件臂实测：cargo test -p llm-algorithm --lib -- spike_arm_costs --release --ignored --nocapture"]
 fn spike_arm_costs() {
     use std::hint::black_box;
@@ -234,7 +223,6 @@ fn spike_arm_costs() {
     );
 }
 
-#[test]
 fn a_membrane_from_another_layer_is_rejected() {
     let wide = quiet(vec![1, 1, 1, 1], vec![1.0, 1.0], 2, 2);
     let narrow = quiet(vec![1, 1], vec![1.0], 2, 1);
@@ -243,13 +231,14 @@ fn a_membrane_from_another_layer_is_rejected() {
     assert!(narrow.step(&[1, 1], &mut state, &mut out).is_err());
     assert_eq!(state.potential()[0].to_bits(), 0.0f32.to_bits());
 }
+}
 
 /// 单通道单输入：门槛 1、无泄漏、重置 0，整数累加直接就是膜电位。
 fn single() -> Spiking {
     Spiking::new(vec![1], vec![1.0], 1, 1, 1.0, 0.0, 0.0).expect("几何合法")
 }
 
-#[test]
+testkit::test_cases! {
 fn the_step_leaves_the_pre_commit_potential_behind_for_the_backward_pass() {
     let layer = single();
     let mut state = layer.membrane();
@@ -262,7 +251,6 @@ fn the_step_leaves_the_pre_commit_potential_behind_for_the_backward_pass() {
     assert_eq!(state.pre()[0].to_bits(), 1.0f32.to_bits());
 }
 
-#[test]
 fn a_second_step_overwrites_the_potential_the_backward_pass_reads() {
     // 有泄漏：第二步的发放前电位是「第一步残留 × 0.5 + 电流」。
     let layer = Spiking::new(vec![1], vec![1.0], 1, 1, 4.0, 0.5, 0.0).expect("几何合法");
@@ -274,7 +262,6 @@ fn a_second_step_overwrites_the_potential_the_backward_pass_reads() {
     assert_eq!(state.pre()[0].to_bits(), 1.5f32.to_bits());
 }
 
-#[test]
 fn both_surrogate_shapes_have_unit_area_and_nothing_outside_the_window() {
     let rect = Surrogate::Rect { width: 0.5 };
     let triangle = Surrogate::Triangle { width: 0.5 };
@@ -299,7 +286,6 @@ fn both_surrogate_shapes_have_unit_area_and_nothing_outside_the_window() {
     assert_eq!(rect.width().to_bits(), triangle.width().to_bits());
 }
 
-#[test]
 fn the_gradients_follow_the_analytic_chain() {
     let layer = single();
     let mut state = layer.membrane();
@@ -322,7 +308,6 @@ fn the_gradients_follow_the_analytic_chain() {
     assert_eq!(grad.weights()[0].to_bits(), 2.0f32.to_bits());
 }
 
-#[test]
 fn a_silent_input_contributes_nothing_to_the_scale_or_the_weights() {
     let layer = single();
     let mut state = layer.membrane();
@@ -344,7 +329,6 @@ fn a_silent_input_contributes_nothing_to_the_scale_or_the_weights() {
     assert_eq!(grad.weights()[0].to_bits(), 0.0f32.to_bits());
 }
 
-#[test]
 fn channels_outside_the_window_take_no_gradient_at_all() {
     // 门槛高到不可能达到：电位离阈值极远，整层都在窗外。
     let layer = quiet(vec![1], vec![1.0], 1, 1);
@@ -366,7 +350,6 @@ fn channels_outside_the_window_take_no_gradient_at_all() {
     }
 }
 
-#[test]
 fn the_backward_step_rejects_bad_inputs_before_touching_the_buf() {
     let layer = single();
     let mut state = layer.membrane();
@@ -393,7 +376,6 @@ fn the_backward_step_rejects_bad_inputs_before_touching_the_buf() {
     assert_eq!(grad.weights()[0].to_bits(), 0.0f32.to_bits());
 }
 
-#[test]
 fn the_master_quantizes_by_rounding_and_clamps_to_the_code_range() {
     // 1.6 → 2、−1.4 → −1；超出 `i8` 对称范围的两个都夹到 ±127，不回绕成别的码。
     let master = Master::new(
@@ -412,7 +394,6 @@ fn the_master_quantizes_by_rounding_and_clamps_to_the_code_range() {
     assert_eq!(view.scale, master.scale);
 }
 
-#[test]
 fn a_training_step_moves_the_float_weights_and_leaves_the_codes_to_follow() {
     let mut master =
         Master::new(vec![0.4, -0.4], vec![1.0], 2, 1, 1.0, 0.0, 0.0).expect("几何合法");
@@ -430,7 +411,6 @@ fn a_training_step_moves_the_float_weights_and_leaves_the_codes_to_follow() {
     assert_eq!(master.view().expect("可量化").weights, [0, 1]);
 }
 
-#[test]
 fn a_step_that_would_make_a_scale_non_positive_is_rejected_without_writing() {
     let mut master = Master::new(vec![0.4], vec![0.1], 1, 1, 1.0, 0.0, 0.0).expect("几何合法");
     let before = master.clone();
@@ -446,7 +426,6 @@ fn a_step_that_would_make_a_scale_non_positive_is_rejected_without_writing() {
     assert_eq!(master, before);
 }
 
-#[test]
 fn the_master_rejects_a_non_finite_weight_before_it_becomes_a_code() {
     // `NaN` 经 `round().clamp()` 会落成某个「看着正常」的 `i8`，从视图上再也认不出来。
     let bad_master = Master::new(vec![f32::NAN], vec![1.0], 1, 1, 1.0, 0.0, 0.0);
@@ -457,7 +436,6 @@ fn the_master_rejects_a_non_finite_weight_before_it_becomes_a_code() {
     assert_eq!(bad_geometry.unwrap_err().code(), Code::Invalid);
 }
 
-#[test]
 fn a_non_positive_learning_rate_is_rejected() {
     let mut master = Master::new(vec![1.0], vec![1.0], 1, 1, 1.0, 0.0, 0.0).expect("几何合法");
     let grad = master.view().expect("可量化").gradients();
@@ -471,7 +449,6 @@ fn a_non_positive_learning_rate_is_rejected() {
     assert_eq!(master.weights()[0].to_bits(), 1.0f32.to_bits());
 }
 
-#[test]
 fn a_gradient_buf_of_another_shape_is_rejected() {
     let wide = quiet(vec![1, 1, 1, 1], vec![1.0, 1.0], 2, 2);
     let layer = quiet(vec![1, 1], vec![1.0], 2, 1);
@@ -501,7 +478,6 @@ fn a_gradient_buf_of_another_shape_is_rejected() {
 /// 训练前的量化误差由初值占据，训练后的残差只剩 `round()` 那半格。
 ///
 /// 跑：`cargo test -p llm-algorithm --lib --release -- qat_costs --ignored --nocapture`
-#[test]
 #[ignore = "训练闭环实测：cargo test -p llm-algorithm --lib -- qat_costs --ignored --nocapture"]
 fn qat_costs() {
     const TARGET: [f32; 8] = [0.8, -1.2, 2.4, -0.6, 1.0, -2.0, 0.3, 1.7];
@@ -537,4 +513,5 @@ fn qat_costs() {
     // 64 步之后每条权重都应贴在目标的那一格上：剩下的误差只可能来自 `round()` 的半格。
     let settled = mse(&master);
     assert!(settled < 0.25, "训练后应进到量化底噪内，得到 {settled}");
+}
 }

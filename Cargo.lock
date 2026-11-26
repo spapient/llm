@@ -542,6 +542,7 @@ dependencies = [
 name = "llm-annotation"
 version = "0.1.0"
 dependencies = [
+ "llm-testkit",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -591,6 +592,7 @@ dependencies = [
  "llm-shard",
  "llm-storage",
  "llm-tensor",
+ "llm-testkit",
  "llm-tokenizer",
  "llm-train",
  "llm-weights",
@@ -601,6 +603,7 @@ dependencies = [
 name = "llm-diagnostic"
 version = "0.1.0"
 dependencies = [
+ "llm-testkit",
  "toml",
 ]
 

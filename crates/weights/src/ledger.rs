@@ -700,9 +700,5 @@ impl Spectral {
 }
 
 #[cfg(test)]
-#[path = "../tests/ptq_svd.rs"]
-mod svd_tests;
-
-#[cfg(test)]
 #[path = "../tests/ledger.rs"]
 mod tests;

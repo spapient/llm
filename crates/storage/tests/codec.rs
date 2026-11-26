@@ -8,7 +8,7 @@ use llm_storage::crc;
 use llm_storage::leb::{Cursor, write};
 use llm_storage::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 
-#[test]
+testkit::test_cases! {
 fn counting_and_writing_agree_byte_for_byte() {
     let values = [0u64, 7, 128, u64::from(u32::MAX), u64::MAX];
     let mut counted = Count::default();
@@ -26,7 +26,6 @@ fn counting_and_writing_agree_byte_for_byte() {
     );
 }
 
-#[test]
 fn a_sealed_sink_covers_every_byte_it_passes_through() {
     let payload: &[u8] = b"frame-with-trailer";
     let mut out: Vec<u8> = Vec::new();
@@ -43,7 +42,6 @@ fn a_sealed_sink_covers_every_byte_it_passes_through() {
     assert_eq!(out, payload, "密封只更新校验，不改字节");
 }
 
-#[test]
 fn a_slice_sink_flags_overflow_instead_of_truncating() {
     let mut buf = [0u8; 4];
     let mut sink = SliceSink::new(&mut buf);
@@ -58,7 +56,6 @@ fn a_slice_sink_flags_overflow_instead_of_truncating() {
     assert_eq!(buf[..2], *b"ab", "越界位置必须保持原值");
 }
 
-#[test]
 fn a_measured_sink_reports_the_same_length_as_its_downstream() {
     let mut inner: Vec<u8> = Vec::new();
     let (len, empty) = {
@@ -71,7 +68,6 @@ fn a_measured_sink_reports_the_same_length_as_its_downstream() {
     assert_eq!(inner.len(), 3);
 }
 
-#[test]
 fn a_file_sink_reports_the_first_write_error_instead_of_panicking() {
     /// 一个一次也写不进去的写入器：模拟磁盘满或已关闭的句柄。
     struct Failing;
@@ -95,7 +91,6 @@ fn a_file_sink_reports_the_first_write_error_instead_of_panicking() {
     assert!(sink.take_error().is_none(), "错误只留第一次，取走即清");
 }
 
-#[test]
 fn a_cursor_consumes_exactly_what_it_was_asked_for() {
     let mut bytes: Vec<u8> = Vec::new();
     write(&mut bytes, 300u64);
@@ -110,7 +105,6 @@ fn a_cursor_consumes_exactly_what_it_was_asked_for() {
     );
 }
 
-#[test]
 fn a_non_canonical_encoding_is_rejected_with_a_category() {
     // 0 的规范编码是单字节 0x00；补一个零字节就成了过长表示。
     let error = Cursor::new(&[0x80, 0x00])
@@ -118,4 +112,5 @@ fn a_non_canonical_encoding_is_rejected_with_a_category() {
         .expect_err("过长表示必须拒绝");
     assert_eq!(error.code().as_str(), "invalid", "错误类别是对外契约");
     assert!(!error.message().trim().is_empty(), "拒绝必须说清为什么");
+}
 }

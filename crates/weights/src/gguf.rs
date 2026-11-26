@@ -803,7 +803,8 @@ mod dequant_tests {
         bits.to_le_bytes()
     }
 
-    #[test]
+    #[cfg(test)]
+    testkit::test_cases! {
     fn q4_0_dequantizes_a_known_block() {
         let mut block = [0u8; 18];
         block[0..2].copy_from_slice(&f16_bytes(0x3C00)); // d = 1.0
@@ -817,7 +818,6 @@ mod dequant_tests {
         assert_eq!(out[17], -7.0);
     }
 
-    #[test]
     fn q5_0_dequantizes_a_known_block() {
         let mut block = [0u8; 22];
         block[0..2].copy_from_slice(&f16_bytes(0x3C00)); // d = 1.0
@@ -829,7 +829,6 @@ mod dequant_tests {
         assert_eq!(out[16], -15.0);
     }
 
-    #[test]
     fn q5_1_dequantizes_a_known_block() {
         let mut block = [0u8; 24];
         block[0..2].copy_from_slice(&f16_bytes(0x3C00)); // d = 1.0
@@ -841,7 +840,6 @@ mod dequant_tests {
         assert_eq!(out[16], 1.5);
     }
 
-    #[test]
     fn q2_k_dequantizes_a_known_block() {
         let mut block = [0u8; 84];
         block[0..2].copy_from_slice(&f16_bytes(0x3C00)); // d = 1.0
@@ -853,13 +851,11 @@ mod dequant_tests {
         assert!(out.iter().all(|&v| (v + 0.5).abs() < 1e-6));
     }
 
-    #[test]
     fn q3_k_scales_unpack_crosses_6bit_fields() {
         // 全 0xFF 的 6-bit 交叉排列解包后是 16 个 63。
         assert_eq!(unpack_q3_scales(&[0xFF; 12]), [63i8; 16]);
     }
 
-    #[test]
     fn q3_k_dequantizes_a_zero_block() {
         let mut block = [0u8; 110];
         block[108..110].copy_from_slice(&f16_bytes(0x3C00)); // d = 1.0
@@ -868,6 +864,7 @@ mod dequant_tests {
         let mut out = [0.0f32; 256];
         decode_q3k(&block, &mut out).expect("解码");
         assert!(out.iter().all(|&v| v == 0.0));
+    }
     }
 }
 

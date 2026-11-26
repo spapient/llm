@@ -839,12 +839,5 @@ pub(crate) fn verify_proof(leaf_hash: &Digest, proof: &Proof, merkle_root: &Dige
 }
 
 #[cfg(test)]
-#[path = "../tests/proof.rs"]
-mod proof_tests;
-
-#[cfg(test)]
-#[path = "../tests/lifecycle.rs"]
-mod lifecycle_tests;
-#[cfg(test)]
 #[path = "../tests/archive.rs"]
 mod tests;

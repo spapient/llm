@@ -1,7 +1,7 @@
 use super::*;
 use testkit::{COSINE_GUARD, Rng, cosine_similarity};
 
-#[test]
+testkit::test_cases! {
 fn forward_matches_a_hand_written_sum() {
     // 一行、一组：点积先按 int8 位模式累加，整组只乘一次标度。
     let x = [1.0f32, 2.0, 3.0, 4.0];
@@ -14,7 +14,6 @@ fn forward_matches_a_hand_written_sum() {
     assert!((out[0] - expected).abs() < 1e-6, "{out:?}");
 }
 
-#[test]
 fn negative_bytes_are_interpreted_as_signed() {
     // `u8` 承载 int8 位模式：255 必须按 -1 解释，而不是 255。
     let x = [1.0f32, 1.0];
@@ -30,7 +29,6 @@ fn negative_bytes_are_interpreted_as_signed() {
 ///
 /// 这是权重符号分流改动后的回归守卫：逐元素 int8 链路算出的 logits，余弦相似度不得低于
 /// 99.9%。阈值只看方向（余弦尺度不变），不要求逐元素相等；累加在 `f64` 完成以保住参考真值。
-#[test]
 fn quantized_logits_keep_cosine_with_the_f32_reference() {
     const M: usize = 64;
     const N: usize = 4;
@@ -78,6 +76,7 @@ fn quantized_logits_keep_cosine_with_the_f32_reference() {
         cosine >= COSINE_GUARD,
         "int8 量化 logits 与 f32 参考余弦 {cosine:.5} < {COSINE_GUARD:.3}"
     );
+}
 }
 
 // 行批：与 i2/i4 同一条契约（批结果逐位等于逐行调用、几何不符被拒），`cpb = 1` 即不打包。

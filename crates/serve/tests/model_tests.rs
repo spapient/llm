@@ -194,7 +194,7 @@ fn history_kv(kv: usize) -> (Vec<f32>, Vec<f32>) {
 
 /// 嵌入 + 注意力块层栈；`seq` 为序列容量，头宽默认等于整段 `kv`（单头）。
 fn embed_block_stack(vocab: usize, hidden: usize, kv: usize, seq: usize) -> Stack {
-    embed_block_stack_dim(vocab, hidden, kv, kv, seq)
+    embed_block_stack_dim(vocab, hidden, kv, kv, seq, WeightFormat::F32)
 }
 
 /// 嵌入 + 注意力块层栈：`head_dim` 显式给定，头数 = `kv / head_dim`；`seq` 为序列容量。
@@ -204,6 +204,7 @@ fn embed_block_stack_dim(
     kv: usize,
     head_dim: usize,
     seq: usize,
+    format: WeightFormat,
 ) -> Stack {
     Stack::of(vec![
         Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
@@ -215,7 +216,7 @@ fn embed_block_stack_dim(
                 head_dim,
                 seq,
                 AttentionAlgo::Naive,
-                WeightFormat::F32,
+                format,
             )
             .expect("层"),
         ),
@@ -258,7 +259,7 @@ fn block_fixture_dim(
 ) -> (CpuModel, Vec<f32>, Projections) {
     let table = embed_table(vocab, hidden);
     let projections = block_projections(hidden, kv);
-    let stack = embed_block_stack_dim(vocab, hidden, kv, head_dim, seq);
+    let stack = embed_block_stack_dim(vocab, hidden, kv, head_dim, seq, WeightFormat::F32);
     let params = block_params(
         table.clone(),
         projections.0.clone(),
@@ -721,11 +722,11 @@ mod kernel;
 #[path = "model_attention_tests.rs"]
 mod attention;
 
-#[path = "model_stack_tests.rs"]
-mod stack;
-
 #[path = "model_embed_tests.rs"]
 mod embed;
 
 #[path = "model_protocol_tests.rs"]
 mod protocol;
+
+#[path = "model_stack_tests.rs"]
+mod stack;

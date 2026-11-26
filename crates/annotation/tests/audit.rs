@@ -343,12 +343,12 @@ fn body<'a>(code: &'a str, name: &str) -> &'a str {
     panic!("`{name}` 的函数体没有配平");
 }
 
+testkit::test_cases! {
 /// 热路径每次生成**只分配一个输出缓冲**：三个入口各是一处 `String::with_capacity`，且除错误
 /// 路径 [`closed`] 外不再出现 `format!` / `to_string` / `collect` 这类中间分配。
 ///
 /// 这条判据比计时更硬：`forbid(unsafe_code)` 下挂不了计数分配器，而毫秒数在 CI 上会抖；"每份声明
 /// 只分配一次"是结构事实，代码一退化就红。
-#[test]
 fn rendering_allocates_only_its_output_buf() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/render.rs");
     let code = code_only(&fs::read_to_string(&path).expect("源码可读"));
@@ -384,7 +384,6 @@ fn rendering_allocates_only_its_output_buf() {
 ///
 /// 剔除器认错一次，上面两条门禁就静默失效（`'"'` 会把下一行的代码当字符串吞掉，`'{'` 会让
 /// 花括号配平多出一层），所以它自带测试，而不是只靠门禁"看起来还是绿的"。
-#[test]
 fn code_only_strips_every_literal_form() {
     let source = r##"
         // format! 行注释
@@ -418,7 +417,6 @@ fn code_only_strips_every_literal_form() {
 
 /// 游标是单趟的：十万段字面量也不占一帧栈。旧的自递归实现在这里会把测试线程的栈撑爆，而栈溢出是
 /// abort 而不是断言失败，所以"栈深与输入无关"这条只能靠这种规模用例观测。
-#[test]
 fn code_only_is_flat_over_many_literals() {
     const COUNT: usize = 100_000;
     let mut source = "\"x\" ".repeat(COUNT);
@@ -433,7 +431,6 @@ fn code_only_is_flat_over_many_literals() {
 }
 
 /// 没有收尾的注释 / 字面量只能吞到文件末尾：游标不许越过末尾，否则切片就 panic。
-#[test]
 fn code_only_stops_at_end_on_unterminated_forms() {
     assert_eq!(code_only("a /* b"), "a ");
     assert_eq!(code_only("let s = \"abc"), "let s = ");
@@ -442,11 +439,11 @@ fn code_only_stops_at_end_on_unterminated_forms() {
 
 /// 只依赖编译期工具：Rust AST 工具与语料 TOML 解析都只在宏进程跑，展开后的目标 crate
 /// 不承接这些运行期依赖（见 ADR 0022 补记：编译期生成器依赖 ≠ 运行期解析器）。
-#[test]
 fn macro_dependencies_are_compile_time_only() {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("manifest 可读");
     let mut dependencies = section_keys(&manifest, "[dependencies]");
     dependencies.sort_unstable();
     assert_eq!(dependencies, ["proc-macro2", "quote", "syn", "toml"]);
+}
 }

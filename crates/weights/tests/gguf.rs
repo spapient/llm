@@ -3,7 +3,7 @@ use super::f16_to_f32;
 use super::*;
 use crate::gguf_fixture as fixture;
 
-#[test]
+testkit::test_cases! {
 fn f16_to_f32_handles_subnormals_infinity_nan_and_zero() {
     assert_eq!(f16_to_f32(0x0001), 5.960_464_5e-8, "最小次正规数");
     assert_eq!(f16_to_f32(0x03FF), 6.097_555e-5, "最大次正规数");
@@ -15,7 +15,6 @@ fn f16_to_f32_handles_subnormals_infinity_nan_and_zero() {
     assert_eq!(f16_to_f32(0x8000).to_bits(), 0x8000_0000, "负零保留符号位");
 }
 
-#[test]
 fn value_accessors_return_their_own_variant() {
     assert_eq!(Value::Int(-7).int(), Some(-7));
     assert_eq!(Value::Float(1.5).float(), Some(1.5));
@@ -32,7 +31,6 @@ fn value_accessors_return_their_own_variant() {
     assert!(Value::Str("x".to_string()).arr().is_none());
 }
 
-#[test]
 fn kind_maps_ggml_codes_and_delegates_layout() {
     // 码、布局、元素数、字节数合成一行：六种类型各占一行，两张并列的表会各自漂移。
     // 线格式写死成字面量，才不是拿上游常量自证：`QType`/`DType` 改口径时这里必须一起改。
@@ -71,7 +69,6 @@ fn kind_maps_ggml_codes_and_delegates_layout() {
     assert!(Kind::from_code(15).is_err(), "未支持的 ggml 码必须显式失败");
 }
 
-#[test]
 fn undecoded_qtypes_are_explicit() {
     let decoded: Vec<QType> = SUPPORTED
         .iter()
@@ -99,13 +96,11 @@ fn undecoded_qtypes_are_explicit() {
     }
 }
 
-#[test]
 fn parses_scalar_only_fixture() {
     let raw = fixture::plain();
     assert_eq!(Gguf::parse(&raw).unwrap().tensors().len(), 2);
 }
 
-#[test]
 fn reads_header_and_metadata() {
     let raw = fixture::standard();
     let file = Gguf::parse(&raw).unwrap();
@@ -116,7 +111,6 @@ fn reads_header_and_metadata() {
     assert_eq!(file.tensor("q4.weight").unwrap().kind, Kind::Q4_K);
 }
 
-#[test]
 fn decodes_every_supported_kind_to_pinned_values() {
     let raw = fixture::standard();
     let file = Gguf::parse(&raw).unwrap();
@@ -148,7 +142,6 @@ fn decodes_every_supported_kind_to_pinned_values() {
     }
 }
 
-#[test]
 fn rejects_bad_magic_and_overflow() {
     let mut raw = fixture::standard();
     raw[0] = b'X';
@@ -162,7 +155,6 @@ fn rejects_bad_magic_and_overflow() {
     assert!(tensor.bytes().is_err());
 }
 
-#[test]
 fn raw_rejects_an_offset_whose_length_overflows() {
     let raw = fixture::standard();
     let file = Gguf::parse(&raw).unwrap();
@@ -179,10 +171,10 @@ fn raw_rejects_an_offset_whose_length_overflows() {
     );
 }
 
-#[test]
 fn a_partial_quantized_block_is_an_error_not_a_zero_tail() {
     let raw = [0u8; 34];
     let mut out = [1.0f32; 33];
     let error = dequantize(Kind::Q8_0, &raw, &mut out).expect_err("33 不是 32 的整数倍");
     assert!(error.to_string().contains("整数倍"), "{error}");
+}
 }

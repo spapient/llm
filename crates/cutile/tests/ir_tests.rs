@@ -18,39 +18,13 @@ fn dot_reduce(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
     }
 }
 
-fn buf(name: &str, access: Access) -> Parameter {
-    Parameter {
-        name: name.to_string(),
-        ty: ValueType::Buf {
-            element: ScalarType::F32,
-            access,
-        },
-    }
-}
-
-fn scalar(name: &str, ty: ScalarType) -> Parameter {
-    Parameter {
-        name: name.to_string(),
-        ty: ValueType::Scalar(ty),
-    }
-}
-
 /// 只有 `output` + `extent` 的最小合法内核，别的判据都从它派生出来。
 fn minimal() -> Kernel {
     Kernel::map(
         "copy",
         vec![
-            Parameter {
-                name: "output".to_string(),
-                ty: ValueType::Buf {
-                    element: ScalarType::F32,
-                    access: Access::ReadWrite,
-                },
-            },
-            Parameter {
-                name: "extent".to_string(),
-                ty: ValueType::Scalar(ScalarType::Usize),
-            },
+            buf("output", Access::ReadWrite),
+            scalar("extent", ScalarType::Usize),
         ],
         "i",
         "extent",
@@ -64,31 +38,10 @@ fn dot() -> Kernel {
     Kernel::reduce(
         "dot",
         vec![
-            Parameter {
-                name: "a".to_string(),
-                ty: ValueType::Buf {
-                    element: ScalarType::F32,
-                    access: Access::Read,
-                },
-            },
-            Parameter {
-                name: "b".to_string(),
-                ty: ValueType::Buf {
-                    element: ScalarType::F32,
-                    access: Access::Read,
-                },
-            },
-            Parameter {
-                name: "out".to_string(),
-                ty: ValueType::Buf {
-                    element: ScalarType::F32,
-                    access: Access::ReadWrite,
-                },
-            },
-            Parameter {
-                name: "len".to_string(),
-                ty: ValueType::Scalar(ScalarType::Usize),
-            },
+            buf("a", Access::Read),
+            buf("b", Access::Read),
+            buf("out", Access::ReadWrite),
+            scalar("len", ScalarType::Usize),
         ],
         "k",
         "len",
@@ -102,7 +55,7 @@ fn dot() -> Kernel {
     )
 }
 
-#[test]
+testkit::test_cases! {
 fn dsl_builds_verified_optimized_ir_and_portable_source() {
     let kernel = __dsl_ir_affine();
     kernel.verify().expect("macro output has valid types");
@@ -118,7 +71,6 @@ fn dsl_builds_verified_optimized_ir_and_portable_source() {
     );
 }
 
-#[test]
 fn dsl_builds_a_reduce_ir_from_compound_assignment() {
     let reduce = __dsl_ir_dot_reduce();
     reduce
@@ -139,7 +91,6 @@ fn dsl_builds_a_reduce_ir_from_compound_assignment() {
     assert!(source.contains("out[0] += (a[k] * b[k]);"), "{source}");
 }
 
-#[test]
 fn verifier_rejects_non_mutable_outputs_and_invalid_extents() {
     let mut kernel = minimal();
     kernel.params[0].ty = ValueType::Buf {
@@ -162,7 +113,6 @@ fn verifier_rejects_non_mutable_outputs_and_invalid_extents() {
 }
 
 /// 名字要原样写进 C 片段，所以 C 关键字与非法形状都在发射前被打回。
-#[test]
 fn c_keywords_and_odd_names_are_rejected() {
     let mut kernel = minimal();
     for name in ["float", "1out", "out-put", ""] {
@@ -175,7 +125,6 @@ fn c_keywords_and_odd_names_are_rejected() {
     }
 }
 
-#[test]
 fn generated_length_names_cannot_collide_with_parameters() {
     let mut kernel = minimal();
     kernel.params.insert(
@@ -195,7 +144,6 @@ fn generated_length_names_cannot_collide_with_parameters() {
 }
 
 /// `abs` / `min` / `max` 发射成 math 库调用，并带上 `<math.h>`。
-#[test]
 fn abs_min_max_emit_math_libcalls() {
     let zero = Expr::F32(0.0f32.to_bits());
     let value = Expr::Min {
@@ -229,7 +177,6 @@ fn abs_min_max_emit_math_libcalls() {
 }
 
 /// 显式构造的 `fmaf` 作为一等表达式发射；它不依赖收缩通道，构造即保留。
-#[test]
 fn fma_emits_math_libcall() {
     let value = Expr::Fma {
         a: Box::new(Expr::Load("a".to_string())),
@@ -255,7 +202,6 @@ fn fma_emits_math_libcall() {
 }
 
 /// `usize` 缓冲本身合法（还能当形参），但它装不下 `f32`，必须在校验期就被挡下。
-#[test]
 fn non_f32_bufs_are_rejected() {
     let mut kernel = minimal();
     kernel.params[0].ty = ValueType::Buf {
@@ -267,7 +213,6 @@ fn non_f32_bufs_are_rejected() {
 }
 
 /// 折叠只吃掉能算出有限值的常量：`1.0 / 0.0` 会变成 `inf`，所以原样留下。
-#[test]
 fn optimizer_keeps_operations_that_leave_the_finite_range() {
     let mut kernel = minimal();
     kernel.write = Write::Map(Expr::Binary {
@@ -283,7 +228,6 @@ fn optimizer_keeps_operations_that_leave_the_finite_range() {
     assert!(source.contains("= -2.0f;"), "{source}");
 }
 
-#[test]
 fn loads_must_name_a_buf_and_scalars_are_typed() {
     let mut kernel = minimal();
     kernel.params.push(Parameter {
@@ -304,7 +248,6 @@ fn loads_must_name_a_buf_and_scalars_are_typed() {
 }
 
 /// 归约发射：输入缓冲用归约长度做上界，输出缓冲只看固定槽位是否越界。
-#[test]
 fn reduce_emits_an_accumulating_loop_into_a_fixed_slot() {
     let source = dot().emit_c().expect("reduction IR emits C");
     assert!(
@@ -330,7 +273,6 @@ fn reduce_emits_an_accumulating_loop_into_a_fixed_slot() {
 }
 
 /// 归约与逐点共用同一套校验：输出仍是可变 f32 缓冲，值仍是 f32 表达式。
-#[test]
 fn reduce_rejects_non_mutable_outputs() {
     let mut reduce = dot();
     reduce.output = "missing".to_string();
@@ -347,7 +289,6 @@ fn reduce_rejects_non_mutable_outputs() {
 }
 
 /// 优化通道删掉死形参：发射的 C 签名里没有它，行为不变。
-#[test]
 fn optimize_drops_dead_params_before_emission() {
     let mut kernel = minimal();
     kernel.params.push(Parameter {
@@ -366,6 +307,7 @@ fn optimize_drops_dead_params_before_emission() {
         .emit_c()
         .expect("dead param is dropped, C still emits");
     assert!(!source.contains("dead"), "{source}");
+}
 }
 
 /// 一个幂等的改名 pass：只认 `from`，改到 `to`，之后再跑什么都不变。
@@ -441,10 +383,10 @@ impl Pass for CancelDoubleNegation {
     }
 }
 
+testkit::test_cases! {
 /// `Pass` 可组合。寄存器要求的是「结果稳定」，不是「调用方排好依赖」：互相交换的 pass 无论怎么
 /// 注册都会收敛到同一个范式（上面反序那条已证），所以顺序只在两个 pass **真正冲突**时才决定结果。
 /// 这里让两条改名对 `middle` 各持一词，正序得 `left`，反序得 `right`。
-#[test]
 fn pass_manager_applies_custom_passes_in_order() {
     let towards_left = Rename {
         name: "middle-to-left",
@@ -475,7 +417,6 @@ fn pass_manager_applies_custom_passes_in_order() {
 /// 管理器不要求调用方排好依赖：`CancelDoubleNegation` 注册在 `LowerSubtraction` **之前**，而它要
 /// 消掉的 `-(-x)` 只有后者才造得出来，所以这条恒等只能靠下一轮扫描完成。两轮各自严格收缩，
 /// 因此驱动一定会重扫——这正是「一轮算完」测不出来的性质。
-#[test]
 fn a_pass_sees_work_created_by_a_later_pass_on_the_next_sweep() {
     let kernel = Kernel::map(
         "peel",
@@ -502,7 +443,6 @@ fn a_pass_sees_work_created_by_a_later_pass_on_the_next_sweep() {
 
 /// 只加不减的 pass 不会被悄悄截断：上限（初始 `cost`）耗尽后 `run` 报错，调用方拿到的是
 /// 「没收敛」，而不是一段半成品内核。
-#[test]
 fn a_pipeline_that_never_settles_is_an_error() {
     struct Grow;
     impl Pass for Grow {
@@ -530,7 +470,6 @@ fn a_pipeline_that_never_settles_is_an_error() {
 
 /// 坏内核由 pass 产出时，报错点名那条 pass：入站校验能过，调用方就不会误以为是自己写错了，
 /// 而且发布构建里也不会让它溜到发射器。
-#[test]
 fn an_invalid_kernel_from_a_pass_names_the_pass() {
     struct Broken;
     impl Pass for Broken {
@@ -553,7 +492,6 @@ fn an_invalid_kernel_from_a_pass_names_the_pass() {
 }
 
 /// 化简一路走到发射器：`input * (0.5 + 0.5)` 在 C 里只剩 `input`。
-#[test]
 fn the_fixpoint_reaches_the_emitted_c() {
     let kernel = Kernel::map(
         "half",
@@ -578,6 +516,7 @@ fn the_fixpoint_reaches_the_emitted_c() {
     let source = kernel.emit_c().expect("emits");
     assert!(source.contains("= input[i];"), "{source}");
     assert!(!source.contains("0.5"), "{source}");
+}
 }
 
 // 定律的差分执行证据：这里只执行、只比较结果位；结构判据在 `ir::pass` 的单测里。

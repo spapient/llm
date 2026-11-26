@@ -4,7 +4,7 @@
 
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn every_row_renders_a_non_empty_detail() {
     let host = Machine;
     for (row, standing) in Row::ALL.iter().zip(audit(&host).iter()) {
@@ -16,7 +16,6 @@ fn every_row_renders_a_non_empty_detail() {
     }
 }
 
-#[test]
 fn a_covered_row_shows_its_evidence_and_an_open_row_shows_why() {
     let covered = Standing::Covered {
         evidence: "aarch64 · NEON/SME 有序点积".to_string(),
@@ -29,11 +28,11 @@ fn a_covered_row_shows_its_evidence_and_an_open_row_shows_why() {
     assert_eq!(detail(&open), shard::platform::Why::NoToolchain.as_str());
 }
 
-#[test]
 fn the_table_is_rendered_in_one_piece() {
     let text = render();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 1 + Row::ALL.len(), "表头 + 每平台一行");
     assert!(lines[0].starts_with("六平台执行合同"), "{}", lines[0]);
     assert!(text.ends_with('\n'), "一次写屏的文本自带收尾换行");
+}
 }

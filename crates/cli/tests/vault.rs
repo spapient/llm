@@ -37,7 +37,7 @@ fn imported_container(tag: &str) -> PathBuf {
     container
 }
 
-#[test]
+testkit::test_cases! {
 fn import_then_inspect_reports_live_metrics() {
     let container = imported_container("inspect");
     let output = llm()
@@ -73,7 +73,6 @@ fn import_then_inspect_reports_live_metrics() {
     assert!(stdout.contains("f32"), "条目清单要列出 dtype：{stdout}");
 }
 
-#[test]
 fn check_decodes_every_tensor_of_a_valid_container() {
     let container = imported_container("check");
     let output = llm()
@@ -94,7 +93,6 @@ fn check_decodes_every_tensor_of_a_valid_container() {
     );
 }
 
-#[test]
 fn settle_writes_the_same_ledger_to_stdout_and_to_a_file() {
     let container = imported_container("settle");
     let output = llm()
@@ -138,7 +136,6 @@ fn settle_writes_the_same_ledger_to_stdout_and_to_a_file() {
     }
 }
 
-#[test]
 fn audit_accepts_the_ledger_it_wrote_and_rejects_a_tampered_cell() {
     let container = imported_container("audit");
     let ledger = container.with_extension("u.json");
@@ -195,7 +192,6 @@ fn audit_accepts_the_ledger_it_wrote_and_rejects_a_tampered_cell() {
     );
 }
 
-#[test]
 fn check_rejects_a_truncated_or_tampered_container() {
     let container = imported_container("tampered");
     let mut bytes = std::fs::read(&container).expect("读回容器");
@@ -229,4 +225,5 @@ fn check_rejects_a_truncated_or_tampered_container() {
         Some(0),
         "篡改容器必须以非零退出码失败"
     );
+}
 }

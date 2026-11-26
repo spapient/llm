@@ -20,7 +20,7 @@ fn stats(x: &[f32], c: usize, count: usize) -> (Vec<f32>, Vec<f32>) {
     (mean, var)
 }
 
-#[test]
+testkit::test_cases! {
 fn batchnorm_train_normalizes_per_channel() {
     let bn = BatchNorm2d {
         channels: 3,
@@ -50,7 +50,6 @@ fn batchnorm_train_normalizes_per_channel() {
     }
 }
 
-#[test]
 fn batchnorm_train_updates_running_stats() {
     let bn = BatchNorm2d {
         channels: 1,
@@ -71,7 +70,6 @@ fn batchnorm_train_updates_running_stats() {
     assert!((rv[0] - 1.333_333).abs() < 1e-4, "running_var {}", rv[0]);
 }
 
-#[test]
 fn batchnorm_eval_uses_running_stats_only() {
     let bn = BatchNorm2d {
         channels: 2,
@@ -94,7 +92,6 @@ fn batchnorm_eval_uses_running_stats_only() {
     }
 }
 
-#[test]
 fn groupnorm_yields_zero_mean_unit_variance() {
     let gn = GroupNorm {
         groups: 2,
@@ -127,7 +124,6 @@ fn groupnorm_yields_zero_mean_unit_variance() {
     }
 }
 
-#[test]
 fn instancenorm_equals_groupnorm_with_c_groups() {
     let (n, spatial, c) = (1, 4, 3);
     let x = testkit::sample(n * spatial * c, 4);
@@ -151,7 +147,6 @@ fn instancenorm_equals_groupnorm_with_c_groups() {
     assert_eq!(a, b);
 }
 
-#[test]
 fn layernorm_normalizes_each_row() {
     let ln = LayerNorm {
         width: 5,
@@ -183,7 +178,6 @@ fn layernorm_normalizes_each_row() {
     }
 }
 
-#[test]
 fn rejects_bad_geometry() {
     let gn = GroupNorm {
         groups: 3,
@@ -201,4 +195,5 @@ fn rejects_bad_geometry() {
         eps: 1e-5,
     };
     assert!(ln.forward(&x, &[], &[], &mut out).is_err());
+}
 }

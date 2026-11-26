@@ -10,8 +10,8 @@
 //! 3. **失败可复现**：种子固定（`PROPTEST_RNG_SEED` 可覆盖），反例语料落在 `proptest-regressions/`
 //!    并入库；同一棵树两次跑必须给同一个反例。
 //!
-//! 环境变量只有两个，且只在本模块收口：`PROPTEST_CASES`、`PROPTEST_RNG_SEED`。取值非法时
-//! **响亮失败**而不是退回默认——静默降级会让门禁假装通过。
+//! 环境变量只有两个，且只在本模块收口：`PROPTEST_CASES`、`PROPTEST_RNG_SEED`。配置在首次读取后
+//! 作为进程级只读事实缓存；取值非法时**响亮失败**而不是退回默认——静默降级会让门禁假装通过。
 //!
 //! 第四条纪律由 `prop_discipline` 这个门盯着：**任何 crate 都不得自建 [`ProptestConfig`]**，
 //! 有 `proptest` 依赖的 crate 必须也依赖本装置并真的调用它。手抄配置不会让任何测试变红，
@@ -72,13 +72,15 @@ pub fn seed_from(raw: Option<&str>) -> u64 {
 /// 生效的样本数（读 `PROPTEST_CASES`）。
 #[must_use]
 pub fn cases() -> u32 {
-    cases_from(std::env::var("PROPTEST_CASES").ok().as_deref())
+    static CASES: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CASES.get_or_init(|| cases_from(std::env::var("PROPTEST_CASES").ok().as_deref()))
 }
 
 /// 生效的种子（读 `PROPTEST_RNG_SEED`）。
 #[must_use]
 pub fn seed() -> u64 {
-    seed_from(std::env::var("PROPTEST_RNG_SEED").ok().as_deref())
+    static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SEED.get_or_init(|| seed_from(std::env::var("PROPTEST_RNG_SEED").ok().as_deref()))
 }
 
 /// 全部性质测试共用的 `ProptestConfig`：`proptest!` 里写

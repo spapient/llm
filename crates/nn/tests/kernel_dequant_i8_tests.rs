@@ -1,6 +1,6 @@
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn dequant_matches_the_scalar_reference() {
     let sample = sample(128, 1);
     let expected = reference(&sample).expect("参考可计算");
@@ -16,7 +16,6 @@ fn dequant_matches_the_scalar_reference() {
 }
 
 /// 退化与边界：空行放行；长度不齐拒绝；饱和量化值与零档不产生 NaN。
-#[test]
 fn dequant_i8_handles_empty_mismatched_and_saturated_values() {
     let mut empty = vec![];
     forward(SCALE, ZERO, tensor::View::one(&[]), &mut empty).expect("空行放行");
@@ -34,7 +33,6 @@ fn dequant_i8_handles_empty_mismatched_and_saturated_values() {
 }
 
 /// 仿射参数负例：零标度、非有限标度、越出 i4 码域（0..15）的零点都在解包前拦下。
-#[test]
 fn dequant_i8_rejects_zero_scale_and_out_of_domain_zero() {
     let q = [8.0f32, 12.0];
     let mut out = [0.0; 2];
@@ -55,4 +53,5 @@ fn dequant_i8_rejects_zero_scale_and_out_of_domain_zero() {
         forward(SCALE, -1.0, tensor::View::one(&q), &mut out).is_err(),
         "负零点越出码域"
     );
+}
 }

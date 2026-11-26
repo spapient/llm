@@ -1,5 +1,7 @@
 use super::*;
 
+// ---- 模型协议与流式解码 ----
+
 /// 默认 `logits_batch` 逐条回退：行序与输入序列一一对应，空批返回空，不吞调用次序。
 #[test]
 fn logits_batch_default_runs_each_sequence_in_input_order() {
@@ -48,7 +50,7 @@ fn envelopes() -> Vec<Envelope> {
     ]
 }
 
-#[test]
+testkit::test_cases! {
 fn every_envelope_round_trips_through_wire_bytes() {
     for envelope in envelopes() {
         let frame = envelope.frame().expect("帧合法");
@@ -62,7 +64,6 @@ fn every_envelope_round_trips_through_wire_bytes() {
     }
 }
 
-#[test]
 fn a_stream_split_across_pushes_yields_the_same_frames() {
     let wire: Vec<u8> = envelopes()
         .iter()
@@ -84,7 +85,6 @@ fn a_stream_split_across_pushes_yields_the_same_frames() {
     decoder.finish().expect("停在帧边界是正常关闭");
 }
 
-#[test]
 fn a_connection_closed_mid_frame_is_an_error() {
     let frame = envelopes()[0].frame().expect("编码");
     let mut decoder = Decoder::new();
@@ -97,7 +97,6 @@ fn a_connection_closed_mid_frame_is_an_error() {
     );
 }
 
-#[test]
 fn a_declared_length_over_the_limit_is_rejected_before_allocating() {
     // 只给头部：魔数、版本、类型、超限长度。接收方必须用这 10 个字节就拒绝。
     let mut header = Vec::new();
@@ -114,7 +113,6 @@ fn a_declared_length_over_the_limit_is_rejected_before_allocating() {
     );
 }
 
-#[test]
 fn a_route_rejects_specs_it_cannot_honor() {
     assert!(Route::parse("POST /v1/completions").is_ok());
     for spec in ["", "POST", "GET v1/completions", " /x"] {
@@ -127,7 +125,6 @@ fn a_route_rejects_specs_it_cannot_honor() {
     }
 }
 
-#[test]
 fn a_response_carries_its_status_into_the_frame() {
     let response = Response::error(Status::BadRequest, "缺 prompt");
     assert_eq!(response.status().code(), 400);
@@ -142,7 +139,6 @@ fn a_response_carries_its_status_into_the_frame() {
     assert_eq!(Response::ok(b"ok".to_vec()).status().code(), 200);
 }
 
-#[test]
 fn admission_answers_with_a_retryable_or_terminal_status() {
     let pager = Pager::new(Cache::new(2, 8).expect("页池"), 2).expect("行宽");
     let mut scheduler = Scheduler::new(pager);
@@ -166,9 +162,9 @@ fn admission_answers_with_a_retryable_or_terminal_status() {
     assert_eq!(response.status().code(), 400);
 }
 
-#[test]
 fn the_prompt_is_encoded_by_the_tokenizer_not_by_the_endpoint() {
     let tokens = crate::encode_prompt(&Bytes, "hé").expect("编码");
     assert_eq!(tokens.len(), 3, "字节级参考实现每个字节一个 token");
     assert_eq!(Bytes.decode(&tokens).expect("解码"), "hé");
+}
 }

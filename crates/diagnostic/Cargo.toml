@@ -21,5 +21,8 @@ build-std = []
 # 构建期共享内核：build-std 原语 + TOML 扫描/读取/取值/合并，各生成器直产强类型静态视图。
 build = ["build-std", "dep:toml"]
 
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+
 [lints]
 workspace = true

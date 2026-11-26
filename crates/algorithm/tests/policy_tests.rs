@@ -6,8 +6,8 @@ use super::*;
 
 const TOL: f64 = 1e-12;
 
+testkit::test_cases! {
 /// 门控始终落在 `[0,1]`。
-#[test]
 fn gates_are_clipped() {
     assert_eq!(pi(-1.0f64, 0.0), 0.0);
     assert_eq!(pi(2.0, 0.0), 1.0);
@@ -16,13 +16,11 @@ fn gates_are_clipped() {
 }
 
 /// 短上下文（ν 小）抬 π，长上下文（ν 大）压 π。
-#[test]
 fn short_ctx_raises_pi() {
     assert!(pi(0.0, 0.0) > pi(0.0, 4.0));
 }
 
 /// RMS 与 τ 的比例关系。
-#[test]
 fn tau_is_scaled_rms() {
     let x = vec![1.0f64, 2.0, 3.0, 4.0];
     let expected = rms(&x) * TAU_SCALE;
@@ -30,21 +28,18 @@ fn tau_is_scaled_rms() {
 }
 
 /// 稀疏度统计 `|xᵢ| < τ` 的占比。
-#[test]
 fn sparsity_counts_below_tau() {
     let x = vec![0.1f64, 0.2, 5.0, 6.0];
     assert!((sparsity(&x, 1.0) - 0.5).abs() <= TOL);
 }
 
 /// 空输入退化为零。
-#[test]
 fn empty_input_is_zero() {
     assert_eq!(rms::<f64>(&[]), 0.0);
     assert_eq!(sparsity::<f64>(&[], 1.0), 0.0);
 }
 
 /// 系数是单位剖分：三项非负且和为 1。
-#[test]
 fn gating_coefficients_partition_unity() {
     for (pi_t, gamma_t) in [(0.0f64, 0.0), (0.25, 0.5), (1.0, 0.0), (0.7, 1.0)] {
         let c = Gating::new(pi_t, gamma_t).coefficients();
@@ -54,7 +49,6 @@ fn gating_coefficients_partition_unity() {
 }
 
 /// 主导通道 = 系数最大者，等值按 α、β、γ 的声明次序。
-#[test]
 fn the_largest_coefficient_picks_the_channel() {
     assert_eq!(Gating::new(1.0f64, 0.0).channel(), Channel::Alpha);
     assert_eq!(Gating::new(0.0f64, 0.0).channel(), Channel::Beta);
@@ -63,7 +57,6 @@ fn the_largest_coefficient_picks_the_channel() {
 }
 
 /// 在线窗口只保留最近 `W` 步，比率随之滑动。
-#[test]
 fn the_window_keeps_the_last_w_observations() {
     let mut rate = MissRate::new();
     assert_eq!(rate.rho(), 0.0, "空窗口没有证据");
@@ -80,7 +73,6 @@ fn the_window_keeps_the_last_w_observations() {
 }
 
 /// 一步门控吃的是这一步的特征：短上下文抬 π、稀疏输入抬 γ。
-#[test]
 fn routing_reads_the_step_it_is_given() {
     let rate = MissRate::default();
     let dense = vec![1.0f64; 8];
@@ -96,7 +88,6 @@ fn routing_reads_the_step_it_is_given() {
 }
 
 /// 通道选择不替代合成：前向走的就是 §1.5 的全合成。
-#[test]
 fn mix_is_the_full_synthesis() {
     let gating = Gating::new(0.25f64, 0.5);
     let (a, b, e) = (vec![1.0f64, 2.0], vec![3.0f64, 4.0], vec![5.0f64, 6.0]);
@@ -117,19 +108,19 @@ fn mix_is_the_full_synthesis() {
 }
 
 /// 短名稳定（诊断、快照与报告按它对齐）。
-#[test]
 fn channel_short_names_are_stable() {
     assert_eq!(Channel::Alpha.as_str(), "alpha");
     assert_eq!(Channel::Beta.as_str(), "beta");
     assert_eq!(Channel::Gamma.as_str(), "gamma");
+}
 }
 
 // ---- 标定口径（原 `tests/policy_tests.rs`）：注册名与三种标定的判别式 ----
 
 const TOL_CALIB: f64 = 1e-9;
 
+testkit::test_cases! {
 /// 已注册名解析成功，未注册名失败。
-#[test]
 fn from_name_accepts_only_registered() {
     assert_eq!(Calib::from_name("spherical"), Some(Calib::Spherical));
     assert_eq!(Calib::from_name("softmax"), Some(Calib::Softmax));
@@ -142,14 +133,12 @@ fn from_name_accepts_only_registered() {
 }
 
 /// softmax 输出和为 1。
-#[test]
 fn softmax_sums_to_one() {
     let d = Calib::Softmax.to_dist(&[1.0f64, 2.0, 3.0]);
     assert!((d.iter().sum::<f64>() - 1.0).abs() <= TOL_CALIB);
 }
 
 /// 球面校准输出 L2 范数为 1（非负分数）。
-#[test]
 fn spherical_has_unit_l2_norm() {
     let d = Calib::Spherical.to_dist(&[3.0f64, 4.0]);
     let norm = d.iter().map(|v| v * v).sum::<f64>().sqrt();
@@ -157,7 +146,6 @@ fn spherical_has_unit_l2_norm() {
 }
 
 /// 温度缩放：τ 越小分布越尖锐。
-#[test]
 fn temperature_sharpens_distribution() {
     let cold = Calib::Temperature(0.5).to_dist(&[1.0f64, 2.0]);
     let hot = Calib::Temperature(2.0).to_dist(&[1.0f64, 2.0]);
@@ -165,10 +153,10 @@ fn temperature_sharpens_distribution() {
 }
 
 /// Brier 评分：命中时为 0（one-hot），未命中为正，值域 `[0,1]`。
-#[test]
 fn brier_scores_perfect_as_zero() {
     let p = vec![0.0f64, 1.0, 0.0];
     assert!((brier(&p, 1)).abs() <= TOL_CALIB);
     let wrong = brier(&p, 0);
     assert!(wrong > 0.0 && wrong <= 1.0);
+}
 }

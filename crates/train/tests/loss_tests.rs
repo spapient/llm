@@ -4,7 +4,7 @@ use crate::{
 };
 use diagnostic::{Code, Result};
 
-#[test]
+testkit::test_cases! {
 fn mse_is_zero_for_identical_bufs() -> Result<()> {
     let a = [1.0f32, -2.0, 3.5];
     assert!(mse(&a, &a)? == 0.0);
@@ -13,7 +13,6 @@ fn mse_is_zero_for_identical_bufs() -> Result<()> {
     Ok(())
 }
 
-#[test]
 fn huber_matches_piecewise_formula() -> Result<()> {
     let pred = [0.0f32, 3.0, -1.5, 10.0];
     let target = [0.0f32, 1.0, -1.0, 0.0];
@@ -31,7 +30,6 @@ fn huber_matches_piecewise_formula() -> Result<()> {
     Ok(())
 }
 
-#[test]
 fn hinge_is_zero_when_margin_is_satisfied() -> Result<()> {
     // y·p = 2 与 3 都过了 margin；y·p = −1 的样本贡献 1−(−1) = 2。
     let got = hinge(&[2.0f32, 3.0, -1.0], &[1.0f32, 1.0, 1.0])?;
@@ -41,7 +39,6 @@ fn hinge_is_zero_when_margin_is_satisfied() -> Result<()> {
     Ok(())
 }
 
-#[test]
 fn bce_is_stable_at_saturation() -> Result<()> {
     // logit 100 且标签 1：损失应趋 0；标签 0 时应趋 100，且不出现 NaN/Inf。
     let logits = [100.0f32];
@@ -53,7 +50,6 @@ fn bce_is_stable_at_saturation() -> Result<()> {
 }
 
 /// 对齐类别的 NLL 应趋近 0：logits 把类别 1 顶到 10，softmax(1)≈1。
-#[test]
 fn cross_entropy_is_near_zero_when_the_label_matches_argmax() -> Result<()> {
     let logits = [0.0, 10.0, 0.0];
     let labels = [1.0];
@@ -63,7 +59,6 @@ fn cross_entropy_is_near_zero_when_the_label_matches_argmax() -> Result<()> {
 }
 
 /// 错配类别被惩罚：同一分布指向类别 0，NLL 约等于两logit 差（10）。
-#[test]
 fn cross_entropy_penalizes_the_misaligned_label() -> Result<()> {
     let logits = [0.0, 10.0, 0.0];
     let labels = [0.0];
@@ -73,7 +68,6 @@ fn cross_entropy_penalizes_the_misaligned_label() -> Result<()> {
 }
 
 /// 多行 NLL 取算术平均。
-#[test]
 fn cross_entropy_averages_over_rows() -> Result<()> {
     let logits = [0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
     let labels = [1.0, 0.0];
@@ -83,7 +77,6 @@ fn cross_entropy_averages_over_rows() -> Result<()> {
 }
 
 /// argmax 命中统计：正确一行、错误一行分别对账。
-#[test]
 fn argmax_hits_counts_correct_and_total() -> Result<()> {
     let logits = [0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
     let labels = [1.0, 1.0];
@@ -94,7 +87,6 @@ fn argmax_hits_counts_correct_and_total() -> Result<()> {
 }
 
 /// 几何与标签校验：词表为 0、空标签、长度不符、索引越界、负索引、非整数索引都拒绝。
-#[test]
 fn rejects_invalid_geometry_and_labels() {
     let logits = [0.0, 10.0, 0.0];
 
@@ -118,7 +110,6 @@ fn rejects_invalid_geometry_and_labels() {
 }
 
 /// 极端大 logit 不应让 exp 上溢：减行内最大值后指数都 ≤ 1，NLL 仍有限且对齐类别趋近 0。
-#[test]
 fn cross_entropy_stays_finite_on_extreme_logits() -> Result<()> {
     let logits = [1e30, 0.0, -1e30];
     let labels = [0.0];
@@ -132,7 +123,6 @@ fn cross_entropy_stays_finite_on_extreme_logits() -> Result<()> {
 }
 
 /// argmax 平局取首个命中的下标：相等时按下标最小一侧计数。
-#[test]
 fn argmax_breaks_ties_to_the_first_idx() -> Result<()> {
     let logits = [5.0, 5.0, 0.0];
     let first_hit = argmax_hits(&logits, &[0.0], 3)?;
@@ -143,7 +133,6 @@ fn argmax_breaks_ties_to_the_first_idx() -> Result<()> {
 }
 
 /// 一行对齐、一行错配时，均值落在两者 NLL 的中间区间。
-#[test]
 fn cross_entropy_averages_mixed_alignment() -> Result<()> {
     let logits = [0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
     let labels = [1.0, 1.0];
@@ -154,14 +143,15 @@ fn cross_entropy_averages_mixed_alignment() -> Result<()> {
     );
     Ok(())
 }
+}
 
 /// 目标函数族的端到端选择：分类损失、蒸馏与 GRPO 走同一张 `Loss` 表。
 mod objective {
     use crate::{Distill, Grpo, Loss, Outcome, cross_entropy, distillation_loss, grpo_loss};
     use diagnostic::{Code, Result};
 
+    testkit::test_cases! {
     /// 分类损失选择与 cross_entropy + argmax 命中一致。
-    #[test]
     fn classify_matches_cross_entropy_and_hits() -> Result<()> {
         let logits = [0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
         let labels = [1.0, 0.0];
@@ -175,7 +165,6 @@ mod objective {
     }
 
     /// 蒸馏损失选择与 distillation_loss + argmax 命中一致。
-    #[test]
     fn distill_matches_distillation_loss_and_hits() -> Result<()> {
         let student = [0.0, 10.0, 0.0];
         let teacher = [0.0, 0.0, 0.0];
@@ -195,7 +184,6 @@ mod objective {
     }
 
     /// RL 损失选择与 grpo_loss 一致，命中恒 0。
-    #[test]
     fn grpo_matches_grpo_loss_and_zero_hits() -> Result<()> {
         let new_logp = [-0.5, -1.0];
         let old_logp = [-0.5, -1.0];
@@ -221,7 +209,6 @@ mod objective {
     }
 
     /// RL 损失的 logits/labels 不参与计算，空输入也可用（new_logp 已预计算）。
-    #[test]
     fn grpo_ignores_logits_and_labels() -> Result<()> {
         let new_logp = [0.0];
         let old_logp = [0.0];
@@ -240,7 +227,6 @@ mod objective {
     }
 
     /// Outcome 是可比较的值类型。
-    #[test]
     fn outcome_is_a_comparable_value() {
         let a = Outcome {
             loss: 1.0,
@@ -254,12 +240,12 @@ mod objective {
     }
 
     /// 非法几何透传：空 labels 的分类损失返回 Invalid。
-    #[test]
     fn classify_rejects_empty_labels() {
         assert!(matches!(
             Loss::Classify.compute_loss(&[0.0], &[], 2),
             Err(e) if e.code() == Code::Invalid
         ));
+    }
     }
 }
 
@@ -268,8 +254,8 @@ mod distill {
     use crate::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
     use diagnostic::{Code, Result};
 
+    testkit::test_cases! {
     /// log-softmax 的指数每行和为 1（数值稳定的 softmax 归一化）。
-    #[test]
     fn log_softmax_exponentiates_to_a_distribution() -> Result<()> {
         let logits = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
         let mut out = [0.0; 6];
@@ -285,7 +271,6 @@ mod distill {
     }
 
     /// 大 logits 下不溢出：每行先减最大值，10^5 量级的 logits 也稳定。
-    #[test]
     fn log_softmax_is_stable_for_large_logits() -> Result<()> {
         let logits = [0.0, 100_000.0, 0.0];
         let mut out = [0.0; 3];
@@ -304,7 +289,6 @@ mod distill {
     }
 
     /// 学生与教师同分布时 KL 为 0。
-    #[test]
     fn kl_div_is_zero_when_distributions_match() -> Result<()> {
         let logits = [1.0, 2.0, 3.0];
         let kl = kl_div(&logits, &logits, 3, 1.0)?;
@@ -313,7 +297,6 @@ mod distill {
     }
 
     /// 学生趋近独热、教师均匀时，KL 趋近 ln(词表宽)。
-    #[test]
     fn kl_div_of_a_peaked_student_against_uniform_teacher() -> Result<()> {
         let kl = kl_div(&[10.0, 0.0], &[0.0, 0.0], 2, 1.0)?;
         assert!(kl > 0.0, "KL 应严格为正，得到 {kl}");
@@ -322,7 +305,6 @@ mod distill {
     }
 
     /// α=0 时蒸馏损失退化为硬标签交叉熵。
-    #[test]
     fn distillation_loss_with_alpha_zero_is_cross_entropy() -> Result<()> {
         let student = [0.0, 10.0, 0.0];
         let teacher = [0.0, 0.0, 0.0];
@@ -337,7 +319,6 @@ mod distill {
     }
 
     /// α=1 时蒸馏损失退化为纯软蒸馏（T² 缩放 KL）。
-    #[test]
     fn distillation_loss_with_alpha_one_is_scaled_kl() -> Result<()> {
         let student = [1.0, 2.0, 3.0];
         let teacher = [0.0, 0.0, 0.0];
@@ -359,7 +340,6 @@ mod distill {
     }
 
     /// 温度非正被拒绝。
-    #[test]
     fn rejects_nonpositive_temperature() {
         assert!(matches!(
             kl_div(&[0.0, 0.0], &[0.0, 0.0], 2, 0.0),
@@ -368,7 +348,6 @@ mod distill {
     }
 
     /// α 越界被拒绝。
-    #[test]
     fn rejects_out_of_range_alpha() {
         assert!(matches!(
             distillation_loss(&[0.0, 0.0], &[0.0, 0.0], &[0.0], 2, Distill::new(1.0, 2.0)),
@@ -377,7 +356,6 @@ mod distill {
     }
 
     /// 学生与教师 logits 不等长被拒绝。
-    #[test]
     fn rejects_length_mismatch() {
         assert!(matches!(
             kl_div(&[0.0, 0.0], &[0.0, 0.0, 0.0], 2, 1.0),
@@ -386,7 +364,6 @@ mod distill {
     }
 
     /// 每行 KL 与均值 KL 一致：同分布每行 KL 为 0。
-    #[test]
     fn kl_per_row_is_zero_when_distributions_match() -> Result<()> {
         let logits = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mut out = [0.0; 2];
@@ -399,7 +376,6 @@ mod distill {
     }
 
     /// 每行 KL 的行均值等于 kl_div 的返回值。
-    #[test]
     fn kl_per_row_averages_to_kl_div() -> Result<()> {
         let student = [1.0, 2.0, 3.0, 3.0, 2.0, 1.0];
         let teacher = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -415,17 +391,17 @@ mod distill {
     }
 
     /// 每行 KL 的 out 与行数不等长被拒绝。
-    #[test]
     fn kl_per_row_rejects_out_length_mismatch() {
         assert!(matches!(
             kl_per_row(&[0.0, 0.0], &[0.0, 0.0], 2, 1.0, &mut [0.0; 3]),
             Err(e) if e.code() == Code::Invalid
         ));
     }
+    }
 }
 
+testkit::test_cases! {
 /// 对齐类别顶到最高时，log-prob 应趋近 0。
-#[test]
 fn log_prob_is_near_zero_for_the_peaked_action() -> Result<()> {
     let logits = [0.0, 10.0, 0.0];
     let actions = [1.0];
@@ -440,7 +416,6 @@ fn log_prob_is_near_zero_for_the_peaked_action() -> Result<()> {
 }
 
 /// 均匀分布下 log-prob 应等于 −ln(vocab)。
-#[test]
 fn log_prob_of_uniform_distribution_is_negative_ln_vocab() -> Result<()> {
     let logits = [0.0, 0.0];
     let actions = [0.0];
@@ -455,7 +430,6 @@ fn log_prob_of_uniform_distribution_is_negative_ln_vocab() -> Result<()> {
 }
 
 /// 越界动作被拒绝。
-#[test]
 fn log_prob_rejects_out_of_range_action() {
     assert!(matches!(
         log_prob(&[0.0, 0.0], &[3.0], 2, &mut [0.0]),
@@ -464,7 +438,6 @@ fn log_prob_rejects_out_of_range_action() {
 }
 
 /// 均匀分布熵 = ln(vocab)，是所有分布里的最大值。
-#[test]
 fn entropy_of_uniform_distribution_is_ln_vocab() -> Result<()> {
     let h = entropy(&[0.0, 0.0, 0.0], 3)?;
     assert!((h - 3.0f32.ln()).abs() < 1e-6, "均匀熵应趋近 ln3，得到 {h}");
@@ -472,7 +445,6 @@ fn entropy_of_uniform_distribution_is_ln_vocab() -> Result<()> {
 }
 
 /// 独热分布熵趋近 0。
-#[test]
 fn entropy_of_a_peaked_distribution_is_zero() -> Result<()> {
     let h = entropy(&[0.0, 100.0, 0.0], 3)?;
     assert!(h.abs() < 1e-3, "独热熵应趋近 0，得到 {h}");
@@ -480,7 +452,6 @@ fn entropy_of_a_peaked_distribution_is_zero() -> Result<()> {
 }
 
 /// advantage 是零均值、单位标准差的 z-score。
-#[test]
 fn advantage_is_a_zero_mean_unit_std_zscore() -> Result<()> {
     let rewards = [1.0, 2.0, 3.0];
     let mut out = [0.0; 3];
@@ -497,7 +468,6 @@ fn advantage_is_a_zero_mean_unit_std_zscore() -> Result<()> {
 }
 
 /// 全体 reward 相等时 advantage 恒 0。
-#[test]
 fn advantage_of_equal_rewards_is_zero() -> Result<()> {
     let rewards = [5.0, 5.0, 5.0];
     let mut out = [0.0; 3];
@@ -510,7 +480,6 @@ fn advantage_of_equal_rewards_is_zero() -> Result<()> {
 }
 
 /// 策略损失是 −mean(advantage · log_prob)。
-#[test]
 fn policy_loss_negates_the_mean_of_advantage_times_log_prob() -> Result<()> {
     let log_probs = [-0.5, -1.0];
     let advantages = [2.0, 1.0];
@@ -521,7 +490,6 @@ fn policy_loss_negates_the_mean_of_advantage_times_log_prob() -> Result<()> {
 }
 
 /// 优势与 log-prob 不等长被拒绝。
-#[test]
 fn policy_loss_rejects_length_mismatch() {
     assert!(matches!(
         policy_loss(&[0.0], &[0.0, 0.0]),
@@ -530,7 +498,6 @@ fn policy_loss_rejects_length_mismatch() {
 }
 
 /// ratio=1（新旧 log-prob 相等）时裁剪代理退化为 advantage 本身。
-#[test]
 fn clipped_surrogate_equals_advantage_when_ratio_is_one() -> Result<()> {
     let mut out = [0.0; 2];
     clipped_surrogate(&[0.0, 0.0], &[0.0, 0.0], &[2.0, 1.0], 0.2, &mut out)?;
@@ -542,7 +509,6 @@ fn clipped_surrogate_equals_advantage_when_ratio_is_one() -> Result<()> {
 }
 
 /// ratio 过高被裁剪到 1+ε：代理 = (1+ε)·A。
-#[test]
 fn clipped_surrogate_caps_high_ratio() -> Result<()> {
     let mut out = [0.0];
     clipped_surrogate(&[10.0], &[0.0], &[1.0], 0.2, &mut out)?;
@@ -555,7 +521,6 @@ fn clipped_surrogate_caps_high_ratio() -> Result<()> {
 }
 
 /// β=0 时 GRPO 损失退化为 −mean(裁剪代理)。
-#[test]
 fn grpo_loss_with_zero_beta_is_negative_surrogate_mean() -> Result<()> {
     let loss = grpo_loss(
         &[0.0, 0.0],
@@ -570,7 +535,6 @@ fn grpo_loss_with_zero_beta_is_negative_surrogate_mean() -> Result<()> {
 }
 
 /// β>0 时 GRPO 损失额外加上 β·mean(KL_ref)。
-#[test]
 fn grpo_loss_adds_beta_times_mean_kl() -> Result<()> {
     let loss = grpo_loss(
         &[0.0, 0.0],
@@ -585,7 +549,6 @@ fn grpo_loss_adds_beta_times_mean_kl() -> Result<()> {
 }
 
 /// 负 ε 被拒绝。
-#[test]
 fn grpo_loss_rejects_negative_epsilon() {
     assert!(matches!(
         grpo_loss(&[0.0], &[0.0], &[0.0], &[0.0], Grpo::new(-0.1, 0.0)),
@@ -594,10 +557,10 @@ fn grpo_loss_rejects_negative_epsilon() {
 }
 
 /// 负 β 被拒绝。
-#[test]
 fn grpo_loss_rejects_negative_beta() {
     assert!(matches!(
         grpo_loss(&[0.0], &[0.0], &[0.0], &[0.0], Grpo::new(0.2, -0.1)),
         Err(e) if e.code() == Code::Invalid
     ));
+}
 }

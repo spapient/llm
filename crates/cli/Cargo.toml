@@ -56,6 +56,7 @@ toml = { workspace = true }
 [dev-dependencies]
 assert_cmd = "2.2.2"
 storage = { path = "../storage", package = "llm-storage" }
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

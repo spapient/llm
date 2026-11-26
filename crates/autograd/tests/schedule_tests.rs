@@ -5,7 +5,7 @@ use testkit::Rng;
 
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn insertion_order_is_the_reverse_record_order() {
     let (tape, _, y, z) = crate::testutil::pair();
     let mut schedule = Schedule::default();
@@ -22,7 +22,6 @@ fn insertion_order_is_the_reverse_record_order() {
 }
 
 /// 分支不参与 loss 时不进计划、也不是梯度终点。
-#[test]
 fn branches_that_miss_the_loss_are_pruned() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -42,7 +41,6 @@ fn branches_that_miss_the_loss_are_pruned() {
 }
 
 /// 深度相同的步骤按编号降序排，顺序可复现。
-#[test]
 fn steps_are_ordered_by_depth_then_by_id() {
     let (_, left, right, joined, loss, schedule) = crate::testutil::diamond();
     assert_eq!(
@@ -60,7 +58,6 @@ fn steps_are_ordered_by_depth_then_by_id() {
 }
 
 /// 深链不递归：两万层也不会栈溢出。
-#[test]
 fn a_deep_chain_does_not_recurse() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -80,7 +77,6 @@ fn a_deep_chain_does_not_recurse() {
 }
 
 /// 同一张图反复 backward，计划逐字段一致。
-#[test]
 fn the_schedule_is_deterministic() {
     fn build() -> (Tape, Var) {
         let mut tape = Tape::new();
@@ -99,7 +95,6 @@ fn the_schedule_is_deterministic() {
 }
 
 /// 复用同一个 `Schedule`：步骤表的缓冲地址不变，说明没有重新分配。
-#[test]
 fn planning_into_an_existing_schedule_reuses_its_bufs() {
     let (mut tape, _, left, right) = crate::testutil::fork();
     let loss = tape.record("add", &[left, right]).expect("记录");
@@ -119,7 +114,6 @@ fn planning_into_an_existing_schedule_reuses_its_bufs() {
 }
 
 /// 同一张图换一个 loss 重新规划：旧步骤不复用、终点跟着变。
-#[test]
 fn replanning_with_another_loss_replaces_the_whole_plan() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -135,7 +129,6 @@ fn replanning_with_another_loss_replaces_the_whole_plan() {
 }
 
 /// 分层：同层互不依赖，前面的层结算完，这一层的每一步都已就绪。
-#[test]
 fn levels_partition_the_schedule_and_each_level_is_ready() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -166,7 +159,6 @@ fn levels_partition_the_schedule_and_each_level_is_ready() {
 }
 
 /// 失败的规划不改变已有计划：调用方拿到 `Err` 时不会得到半份计划。
-#[test]
 fn a_failed_plan_keeps_the_previous_schedule() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -183,7 +175,6 @@ fn a_failed_plan_keeps_the_previous_schedule() {
 /// 用最小标量引擎跑完整反向：调度的顺序与扇出足够复现解析梯度。
 ///
 /// 数值由这里给出的反向公式累积，和运行时一样：本层只提供顺序与"何时齐全"，不提供数。
-#[test]
 fn a_toy_engine_reproduces_analytic_gradients() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -220,7 +211,6 @@ fn a_toy_engine_reproduces_analytic_gradients() {
 }
 
 /// 随机图上逐条核对不变量：可达性、拓扑序、终点与分层。
-#[test]
 fn random_graphs_keep_every_invariant() {
     let mut rng = Rng::new(0x5EED_1234);
     for round in 0..400 {
@@ -252,6 +242,7 @@ fn random_graphs_keep_every_invariant() {
         check_order(&tape, &schedule, &position, round);
         check_levels(&schedule, round);
     }
+}
 }
 
 /// 拓扑序：每一步的入边都必须排在它后面，深度不得回升。
@@ -345,7 +336,7 @@ fn random_graph(rng: &mut Rng) -> Option<(Tape, Var)> {
     Some((tape, loss))
 }
 
-#[test]
+testkit::test_cases! {
 fn counts_separate_roles_and_graph_edges() {
     let mut tape = Tape::new();
     let w = tape.parameter();
@@ -374,7 +365,6 @@ fn counts_separate_roles_and_graph_edges() {
         summary.vars() as usize - planned.reachable()
     );
 }
-#[test]
 fn a_diamond_waits_for_every_contribution() {
     let (x, left, right, joined, _, schedule) = crate::testutil::diamond();
     let mut account = schedule.account();
@@ -389,7 +379,6 @@ fn a_diamond_waits_for_every_contribution() {
 }
 
 /// 同一个变量在一步里出现两次，就要收两份贡献，且只报一次齐全。
-#[test]
 fn a_repeated_input_receives_one_contribution_per_position() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -412,7 +401,6 @@ fn a_repeated_input_receives_one_contribution_per_position() {
 }
 
 /// 乱序执行、重复结算、外来步骤都必须失败，而不是悄悄算错。
-#[test]
 fn settling_out_of_order_or_twice_is_rejected() {
     let (mut tape, x, _, _, schedule) = crate::testutil::linear();
     let steps = schedule.steps();
@@ -437,7 +425,6 @@ fn settling_out_of_order_or_twice_is_rejected() {
 }
 
 /// 账本按计划重建：结算进度清零，扇出重新数一遍。
-#[test]
 fn rebuilding_starts_the_ledger_over() {
     let (_, _, y, _, schedule) = crate::testutil::linear();
     let mut account = Account::new();
@@ -454,7 +441,6 @@ fn rebuilding_starts_the_ledger_over() {
 }
 
 /// `settle_into` 与 `settle` 结果一致，复用调用方的缓冲。
-#[test]
 fn settling_into_a_reused_buf_reports_the_same_ready_vars() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -478,7 +464,6 @@ fn settling_into_a_reused_buf_reports_the_same_ready_vars() {
 }
 
 /// 一个账本只管一份调度：空账本拒绝一切，`finished` 也只是平凡真。
-#[test]
 fn an_empty_account_accepts_nothing() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -500,7 +485,6 @@ fn an_empty_account_accepts_nothing() {
 }
 
 /// 每个输入都有扇出，图上变量的计数与独立统计一致；不进图的变量不收账。
-#[test]
 fn fan_out_matches_an_independent_count() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -521,4 +505,5 @@ fn fan_out_matches_an_independent_count() {
         "常量确实在图外"
     );
     assert!(!account.ready(constant), "图外变量永远不会'就绪'");
+}
 }

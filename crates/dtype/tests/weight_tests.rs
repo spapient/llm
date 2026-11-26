@@ -12,7 +12,7 @@ const FORMATS: [(WeightFormat, DType); 9] = [
     (WeightFormat::int8(32), DType::I8),
 ];
 
-#[test]
+testkit::test_cases! {
 fn every_element_type_maps_to_a_format_and_back() {
     for dtype in DType::ALL.iter().copied() {
         if let Some(format) = WeightFormat::of_dtype(dtype) {
@@ -25,7 +25,6 @@ fn every_element_type_maps_to_a_format_and_back() {
     );
 }
 
-#[test]
 fn every_weight_format_has_an_explicit_dtype() {
     for (format, dtype) in FORMATS {
         assert_eq!(format.dtype(), dtype, "{format} 的存储类型必须显式声明");
@@ -33,13 +32,11 @@ fn every_weight_format_has_an_explicit_dtype() {
     assert_eq!(std::mem::size_of::<WeightFormat>(), 16);
 }
 
-#[test]
 fn int8_elements_take_one_byte_each() {
     assert_eq!(WeightFormat::INT8.dtype(), DType::I8);
     assert_eq!(WeightFormat::INT8.dtype().bits(), 8);
 }
 
-#[test]
 fn the_display_form_is_stable() {
     assert_eq!(WeightFormat::F32.to_string(), "f32");
     assert_eq!(WeightFormat::INT4.to_string(), "int4（分组 32）");
@@ -47,7 +44,6 @@ fn the_display_form_is_stable() {
     assert_eq!(WeightFormat::PACKED2.to_string(), "2 位打包（未声明分组）");
 }
 
-#[test]
 fn grouped_formats_expose_dtype_and_group() {
     assert_eq!(WeightFormat::INT2.dtype(), DType::U2);
     assert_eq!(WeightFormat::INT4.dtype(), DType::U4);
@@ -60,7 +56,6 @@ fn grouped_formats_expose_dtype_and_group() {
     assert_eq!(WeightFormat::F32.group(), None);
 }
 
-#[test]
 fn quantized_bit_widths_are_explicit() {
     for (bits, format) in [
         (2, WeightFormat::int2(32)),
@@ -79,7 +74,6 @@ fn quantized_bit_widths_are_explicit() {
 }
 
 #[cfg(feature = "serde")]
-#[test]
 fn toml_wire_formats_are_stable_and_round_trip() {
     for (format, _) in FORMATS {
         let encoded = toml::to_string(&format).expect("权重编码可序列化");
@@ -96,4 +90,5 @@ fn toml_wire_formats_are_stable_and_round_trip() {
     );
     assert!(toml::from_str::<WeightFormat>("type = \"int4\"\n").is_err());
     assert!(toml::from_str::<WeightFormat>("type = \"f32\"\ngroup = 32\n").is_err());
+}
 }

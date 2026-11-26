@@ -7,7 +7,7 @@ fn shape(m: usize, n: usize) -> ShapeCtx {
     MODEL.projection(m, n).expect("两个投影轴都声明了")
 }
 
-#[test]
+testkit::test_cases! {
 fn cost_reads_three_f32_operands_and_counts_one_multiply_add_per_element() {
     // 小形状逐项可算：w 是 m·n 个 f32、x 是 m 个、y 是 n 个；flops = 2·m·n。
     let cost = gemv::cost::<F32>(&shape(8, 4)).expect("合法形状");
@@ -16,7 +16,6 @@ fn cost_reads_three_f32_operands_and_counts_one_multiply_add_per_element() {
     assert_eq!(cost.flops, 2.0 * 8.0 * 4.0);
 }
 
-#[test]
 fn a_zero_extent_is_rejected_instead_of_silently_priced() {
     let error = ShapeCtx::new([('m', 8), ('n', 0)]).expect_err("n = 0");
     assert_eq!(error.code(), Code::Invalid);
@@ -27,7 +26,6 @@ fn a_zero_extent_is_rejected_instead_of_silently_priced() {
 }
 
 /// 稠密算子的形状粒度是 1：一条只为对齐 nibble 的约束不该溢出到 f32 权重上。
-#[test]
 fn any_width_is_a_legal_dense_shape() {
     assert_eq!(MODEL.group, 1);
     let odd = gemv::cost::<F32>(&shape(100, 3)).expect("100 不是 32 的倍数也合法");
@@ -38,7 +36,6 @@ fn any_width_is_a_legal_dense_shape() {
     assert_eq!(y.len(), 3);
 }
 
-#[test]
 fn sample_is_deterministic_and_sized_to_the_shape() {
     let first = gemv::sample::<F32>(64, 4);
     assert_eq!(first, gemv::sample::<F32>(64, 4));
@@ -48,7 +45,6 @@ fn sample_is_deterministic_and_sized_to_the_shape() {
     assert_eq!(first.scalar("gsz"), Some(BLOCK as i64));
 }
 
-#[test]
 fn the_scalar_reference_matches_a_hand_computed_dot_product() {
     // 一行的权重是 1..=4，输入是 1、2、3、4 → 1+4+9+16 = 30。
     let x = [1.0f32, 2.0, 3.0, 4.0];
@@ -58,7 +54,6 @@ fn the_scalar_reference_matches_a_hand_computed_dot_product() {
     assert_eq!(y, [30.0]);
 }
 
-#[test]
 fn the_reference_is_exact_on_the_deterministic_sample() {
     // 取值都在 2 的负幂网格上：累加在 f32 里精确，所以结果可以被逐位钉死。
     // 期望值由同一段算术算出，再用"换顺序必须等价"验一遍：分块边界的移动不改变结果。
@@ -73,7 +68,6 @@ fn the_reference_is_exact_on_the_deterministic_sample() {
 }
 
 /// 内核本体与标量参考在同一份确定性样本上逐位一致（softmax / rope 同口径）。
-#[test]
 fn forward_matches_the_scalar_reference_on_the_deterministic_sample() {
     let sample = gemv::sample::<F32>(64, 4);
     let expected = gemv::reference::<F32>(&sample).expect("参考可计算");
@@ -84,7 +78,6 @@ fn forward_matches_the_scalar_reference_on_the_deterministic_sample() {
     assert_eq!(out, expected, "稠密 GEMV 内核与参考必须逐位一致");
 }
 
-#[test]
 fn a_row_that_is_shorter_than_declared_is_rejected() {
     let x = [1.0f32; 4];
     let w = [1.0f32; 4];
@@ -95,7 +88,6 @@ fn a_row_that_is_shorter_than_declared_is_rejected() {
 }
 
 /// 稠密格式不接受标度：换错算子必须报错，而不是"算出一个看起来对的数"。
-#[test]
 fn the_dense_format_refuses_a_scales_buf() {
     let x = [1.0f32; 4];
     let w = [1.0f32; 4];
@@ -108,7 +100,6 @@ fn the_dense_format_refuses_a_scales_buf() {
 /// 样本的权重类型由格式决定：稠密格式的 `w` 是 f32。两道闸都要在——`Sample::set` 拒绝换类型
 /// （桥接期的闸），骨架自己也拒绝（直接改出来的 `[u8]` 权重不能按 f32 读，那会算出一个看起来
 /// 对的数）。
-#[test]
 fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
     let mut sample = gemv::sample::<F32>(8, 2);
     let error = sample
@@ -126,7 +117,6 @@ fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
     assert!(error.to_string().contains("f32"), "{error}");
 }
 
-#[test]
 fn call_arguments_follow_the_template_signature() {
     let signature = crate::sig::Signature::parse(
         "gemv_f32",
@@ -144,6 +134,7 @@ fn call_arguments_follow_the_template_signature() {
     );
     assert_eq!(signature.output(), Some("y"));
 }
+}
 
 /// `Model::group` 必须来自 [`Format::GRAIN`]，不是注解另写的一个数。
 ///
@@ -156,7 +147,7 @@ fn grain_is_what_the_model_declares<G: Format + crate::operator::Operator>() {
     );
 }
 
-#[test]
+testkit::test_cases! {
 fn the_declared_group_is_the_format_grain() {
     grain_is_what_the_model_declares::<F32>();
     grain_is_what_the_model_declares::<crate::gemv::i2::I2>();
@@ -171,7 +162,6 @@ fn the_declared_group_is_the_format_grain() {
 /// `gemv::reference` 内部就是 `F::forward`，那是自己跟自己比（F6）。这里用 f64 顺序累加当
 /// 真参考——f32×f32 落进 f64 是精确的（24+24 ≤ 53 位），4096 项 f64 求和的相对误差
 /// ≈ 4096·2⁻⁵³ ≈ 4.5e-13，比 f32 的界小 9 个数量级，故 `exact as f32` 就是可用的真值。
-#[test]
 fn the_dense_dot_stays_inside_the_gamma_bound_against_a_wider_reference() {
     const M: usize = 4096;
     // 3/7 与 1/3 在二进制里都不精确，累加不可精确 → 重排误差真实可见。
@@ -205,7 +195,6 @@ fn the_dense_dot_stays_inside_the_gamma_bound_against_a_wider_reference() {
 ///
 /// 这里故意取奇数 `N = 5`：若块宽推导写成 `n · m` 而不是 `COLS · m`，第 4 行会读到别行的权重，
 /// 或者尾行拿不到数据——这正是本用例要钉住的边界，而单行版测试覆盖不到。
-#[test]
 fn the_row_blocked_forward_stays_inside_the_gamma_bound_with_an_odd_row_count() {
     const M: usize = 512;
     const N: usize = 5;
@@ -233,4 +222,5 @@ fn the_row_blocked_forward_stays_inside_the_gamma_bound_with_an_odd_row_count() 
         );
         assert!(magnitude > 0.0, "第 {r} 行样本退化");
     }
+}
 }

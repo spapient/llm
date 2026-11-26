@@ -13,33 +13,30 @@ fn check_sme(m: usize, n: usize, k: usize) {
     );
 }
 
-#[test]
+testkit::test_cases! {
 fn sme_matches_on_tile_multiples() {
     check_sme(128, 128, 128);
 }
 
-#[test]
 fn sme_matches_on_single_col_group() {
     check_sme(128, 64, 128);
 }
 
-#[test]
 fn sme_matches_on_single_row_block() {
     check_sme(16, 64, 1024);
 }
 
 /// 多线程铺法：`t = min(线程数, m/16, n/64)` 由形状决定，三个单线程用例的 `t` 都是 1，
 /// 线程化分支（`packed` 按行块切分 + 屏障同步后外积）从未被执行。256×256 给出 `t = 4`。
-#[test]
 fn sme_matches_when_threaded() {
     check_threaded(256, 256, 256);
 }
 
 /// 基准里 1024³ 的 `t = min(18, 64, 16) = 16`，即行块切得最细的那一档；这里用同宽的形状
 /// 复现同一 `t`，确认 16 个线程各写自己的行块、互不重叠。
-#[test]
 fn sme_matches_at_full_thread_count() {
     check_threaded(512, 1024, 64);
+}
 }
 
 /// 线程化用例的前置断言：本机必须真的切出 ≥2 个线程，否则用例名在撒谎（F6：看起来测了线程化，

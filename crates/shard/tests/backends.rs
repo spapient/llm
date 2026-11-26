@@ -18,7 +18,7 @@ fn ensure_backends() {
 // 厂商工具链（MSVC cl.exe）：从 cutile 搬来，`find_cl`/`msvc_version` 只服务 Windows 上的 nvcc。
 // ---------------------------------------------------------------------------
 
-#[test]
+testkit::test_cases! {
 fn paths_without_an_msvc_segment_parse_as_empty() {
     let mut rng = testkit::Rng::new(0xC12);
     for _ in 0..32 {
@@ -27,7 +27,6 @@ fn paths_without_an_msvc_segment_parse_as_empty() {
     }
 }
 
-#[test]
 fn the_newest_msvc_wins_by_version_not_by_string_order() {
     let candidates = [
         r"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\9.29.30133\bin\Hostx64\x64\cl.exe",
@@ -43,7 +42,6 @@ fn the_newest_msvc_wins_by_version_not_by_string_order() {
     );
 }
 
-#[test]
 fn a_path_without_a_version_loses_to_one_with_it() {
     assert!(msvc_version(Path::new(r"C:\msvc\cl.exe")).is_empty());
     assert_eq!(
@@ -53,12 +51,13 @@ fn a_path_without_a_version_loses_to_one_with_it() {
         vec![14, 29, 30133]
     );
 }
+}
 
 // ---------------------------------------------------------------------------
 // Metal 见证驱动：宽度取宏、非空。
 // ---------------------------------------------------------------------------
 
-#[test]
+testkit::test_cases! {
 fn the_metal_driver_takes_its_width_from_the_witness_limit() {
     let driver = metal_driver(MAX_OUT);
     assert!(driver.contains(&format!("#define WITNESS_MAX_OUT {MAX_OUT}")));
@@ -72,10 +71,10 @@ fn the_metal_driver_takes_its_width_from_the_witness_limit() {
     }
 }
 
-#[test]
 fn metal_driver_wrapper_is_nonempty() {
     let driver = metal_driver(MAX_OUT);
     assert!(!driver.is_empty());
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +93,7 @@ fn check_device_witnesses(profile: &cutile::prof::Profile, dirs: &Dirs, label: &
     assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
 }
 
-#[test]
+testkit::test_cases! {
 fn every_metal_witness_runs_on_the_gpu() {
     ensure_backends();
     let profile = profile("metal");
@@ -106,7 +105,6 @@ fn every_metal_witness_runs_on_the_gpu() {
     check_device_witnesses(&profile, &dirs, "Metal");
 }
 
-#[test]
 fn every_nvidia_witness_runs_on_the_cuda_device() {
     ensure_backends();
     let profile = profile("nvidia");
@@ -118,7 +116,6 @@ fn every_nvidia_witness_runs_on_the_cuda_device() {
     check_device_witnesses(&profile, &dirs, "CUDA");
 }
 
-#[test]
 fn the_metal_front_end_demands_an_explicit_address_space() {
     ensure_backends();
     if !crate::witness::device_available(&profile("metal")) {
@@ -138,6 +135,7 @@ fn the_metal_front_end_demands_an_explicit_address_space() {
     let text = error.to_string();
     assert!(text.contains("xcrun metal"), "{text}");
     assert!(text.contains("address space"), "{text}");
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -174,10 +172,10 @@ fn generated_device_program_braces_are_balanced() {
 // 昇腾后端：AscendC 单源文本的形状，以及“缺编译器就如实说缺谁”。
 // ---------------------------------------------------------------------------
 
+testkit::test_cases! {
 /// 昇腾的见证程序必须是一份**能被 ccec 处理的 AscendC 翻译单元**：缺 `__aicore__` 的设备函数、
 /// 缺 `GM_ADDR` / `__gm__` 的显存指针、或缺 AscendCL 的 host 驱动，产出就不属于任何设备，
 /// 只是把字段 `emit = "ascendc"` 贴在了件普通 C++ 上。
-#[test]
 fn an_ascend_program_is_a_single_ascendc_translation_unit() {
     ensure_backends();
     let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-program"));
@@ -235,7 +233,6 @@ fn an_ascend_program_is_a_single_ascendc_translation_unit() {
 
 /// 昇腾可用性是两个独立事实的合取：编译器在、设备也在。合成一个布尔就丢掉了唯一的行动信息
 /// （装 CANN 还是换机器）；把缺的那个报成另一个也是假绿——`ascend` 的等级仍因此恒不可用。
-#[test]
 fn the_ascend_backend_needs_both_the_compiler_and_the_device() {
     ensure_backends();
     let profile = profile("ascend");
@@ -268,7 +265,6 @@ fn the_ascend_backend_needs_both_the_compiler_and_the_device() {
 
 /// 本机没有 `ccec` 时，报的必须是「编译器不在」而不是一条 C++ 语法错误：那是 `nvcc` 那一类
 /// “把缺工具链伪装成编译失败”的旧病。
-#[test]
 fn an_ascend_run_without_ccec_names_the_missing_compiler() {
     ensure_backends();
     if detect_cce().is_some() {
@@ -287,4 +283,5 @@ fn an_ascend_run_without_ccec_names_the_missing_compiler() {
         .expect_err("缺 ccec 就编不出来");
     let text = error.to_string();
     assert!(text.contains("ccec"), "要报缺哪个程序：{text}");
+}
 }

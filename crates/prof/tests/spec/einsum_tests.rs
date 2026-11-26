@@ -16,7 +16,7 @@ fn error(text: &str) -> String {
     Expr::parse(text).expect_err("应当被拒绝").to_string()
 }
 
-#[test]
+testkit::test_cases! {
 fn an_explicit_expression_keeps_terms_and_output_order() {
     let expr = Expr::parse("nm,m,ng,n->n").expect("合法");
     assert_eq!(expr.arity(), 4);
@@ -27,14 +27,12 @@ fn an_explicit_expression_keeps_terms_and_output_order() {
     assert_eq!(expr.to_string(), "nm,m,ng,n->n");
 }
 
-#[test]
 fn whitespace_is_trimmed_but_not_interpreted() {
     let expr = Expr::parse("  i,j->ij \n").expect("合法");
     assert_eq!(expr.text(), "i,j->ij");
     assert_eq!(expr.arity(), 2);
 }
 
-#[test]
 fn a_scalar_output_and_scalar_terms_are_allowed() {
     let expr = Expr::parse("m,->").expect("标量输出合法");
     assert_eq!(expr.arity(), 2);
@@ -43,32 +41,27 @@ fn a_scalar_output_and_scalar_terms_are_allowed() {
     assert_eq!(terms, [['m'].as_slice(), &[]]);
 }
 
-#[test]
 fn an_empty_expression_is_rejected() {
     assert!(error("").contains("为空"));
     assert!(error("   ").contains("为空"));
 }
 
-#[test]
 fn a_missing_arrow_is_rejected_with_an_example() {
     let message = error("nm,m");
     assert!(message.contains("缺少 `->`"), "{message}");
     assert!(message.contains("nm,m->n"), "{message}");
 }
 
-#[test]
 fn a_second_arrow_is_rejected() {
     assert!(error("nm,m->n->n").contains("只能出现一次"));
 }
 
-#[test]
 fn a_non_letter_is_rejected_with_its_position() {
     let message = error("n1,m->n");
     assert!(message.contains("第 0 项"), "{message}");
     assert!(message.contains("`1`"), "{message}");
 }
 
-#[test]
 fn a_repeated_letter_inside_one_term_is_rejected() {
     let message = error("nn,m->n");
     assert!(message.contains("重复"), "{message}");
@@ -78,26 +71,24 @@ fn a_repeated_letter_inside_one_term_is_rejected() {
     );
 }
 
-#[test]
 fn a_repeated_output_letter_is_rejected() {
     assert!(error("nm->nn").contains("输出轴必须唯一"));
 }
 
-#[test]
 fn an_output_axis_that_no_input_mentions_is_rejected() {
     let message = error("nm->nk");
     assert!(message.contains("输出轴 `k`"), "{message}");
 }
 
-#[test]
 fn parsing_through_from_str_is_the_same_path() {
     let parsed: Expr = "ij,jk->ik".parse().expect("合法");
     assert_eq!(parsed, Expr::parse("ij,jk->ik").expect("合法"));
 }
+}
 
 // ===== 轴长度表（extents） =====
 
-#[test]
+testkit::test_cases! {
 fn lengths_are_looked_up_by_letter() {
     let extents = Extents::new([('n', 8), ('m', 64), ('g', 2)]).expect("合法");
     assert_eq!(extents.get('n'), Some(8));
@@ -107,38 +98,32 @@ fn lengths_are_looked_up_by_letter() {
     assert!(!extents.is_empty());
 }
 
-#[test]
 fn the_display_is_stable_and_sorted() {
     let extents = Extents::new([('n', 8), ('g', 2), ('m', 64)]).expect("合法");
     assert_eq!(extents.to_string(), "g=2 m=64 n=8");
 }
 
-#[test]
 fn an_empty_table_is_allowed_because_a_scalar_has_no_axes() {
     let extents = Extents::new([]).expect("合法");
     assert!(extents.is_empty());
     assert_eq!(extents.to_string(), "");
 }
 
-#[test]
 fn a_zero_length_axis_is_rejected() {
     let error = Extents::new([('n', 0)]).expect_err("空轴应当被拒绝");
     assert!(error.to_string().contains("长度为 0"), "{error}");
 }
 
-#[test]
 fn a_duplicate_axis_is_rejected_instead_of_overwritten() {
     let error = Extents::new([('n', 8), ('n', 16)]).expect_err("重复轴应当被拒绝");
     assert!(error.to_string().contains("两次"), "{error}");
 }
 
-#[test]
 fn a_non_letter_axis_is_rejected() {
     let error = Extents::new([('1', 8)]).expect_err("非字母应当被拒绝");
     assert!(error.to_string().contains("不是字母"), "{error}");
 }
 
-#[test]
 fn a_grouped_axis_derives_its_length_and_remembers_its_base() {
     let extents = Extents::new([('m', 64)])
         .expect("合法")
@@ -151,7 +136,6 @@ fn a_grouped_axis_derives_its_length_and_remembers_its_base() {
     assert_eq!(extents.to_string(), "g=2 m=64");
 }
 
-#[test]
 fn grouping_rejects_a_base_that_cannot_be_divided_evenly() {
     let error = Extents::new([('m', 33)])
         .expect("合法")
@@ -160,7 +144,6 @@ fn grouping_rejects_a_base_that_cannot_be_divided_evenly() {
     assert!(error.to_string().contains("整数倍"), "{error}");
 }
 
-#[test]
 fn grouping_rejects_a_missing_base_and_a_zero_divisor() {
     let missing = Extents::new([('n', 8)])
         .expect("合法")
@@ -175,7 +158,6 @@ fn grouping_rejects_a_missing_base_and_a_zero_divisor() {
     assert!(zero.to_string().contains("不能为 0"), "{zero}");
 }
 
-#[test]
 fn grouping_rejects_a_taken_label_and_a_self_base() {
     let taken = Extents::new([('m', 64), ('g', 3)])
         .expect("合法")
@@ -188,6 +170,7 @@ fn grouping_rejects_a_taken_label_and_a_self_base() {
         .group('m', 'm', 32)
         .expect_err("不能以自己为基准");
     assert!(itself.to_string().contains("自己"), "{itself}");
+}
 }
 
 // ===== 代价推导（formula） =====
@@ -208,7 +191,7 @@ fn matmul() -> Formula {
     .expect("三项对三个操作数")
 }
 
-#[test]
+testkit::test_cases! {
 fn a_matmul_costs_two_flops_per_reduced_element_and_every_operand() {
     let cost = matmul()
         .cost(&extents([('i', 2), ('j', 3), ('k', 4)]))
@@ -220,7 +203,6 @@ fn a_matmul_costs_two_flops_per_reduced_element_and_every_operand() {
     assert_eq!(cost.bytes(), (2 * 3 + 3 * 4 + 2 * 4) * 4, "合计不变");
 }
 
-#[test]
 fn the_same_formula_is_reusable_for_any_shape() {
     let formula = matmul();
     let small = formula
@@ -233,7 +215,6 @@ fn the_same_formula_is_reusable_for_any_shape() {
     assert_eq!(large.flops, 2.0 * 512.0 * 512.0 * 512.0);
 }
 
-#[test]
 fn an_elementwise_expression_counts_one_operation_per_output_element() {
     // 转置：没有规约轴，每个输出元素一次索引运算。
     let formula = Formula::new(
@@ -256,7 +237,6 @@ fn an_elementwise_expression_counts_one_operation_per_output_element() {
     assert_eq!(cost.write, 12 * 4);
 }
 
-#[test]
 fn axes_are_classified_as_batch_free_and_reduced() {
     let formula = Formula::new(
         Expr::parse("bij,bjk,bik->bik").expect("合法"),
@@ -290,7 +270,6 @@ fn axes_are_classified_as_batch_free_and_reduced() {
     assert!(axes.reduces());
 }
 
-#[test]
 fn output_shape_follows_the_declared_output_order() {
     let formula = Formula::new(
         Expr::parse("ij,ji->ji").expect("合法"),
@@ -306,7 +285,6 @@ fn output_shape_follows_the_declared_output_order() {
     assert_eq!(axes.output_shape(), [4, 3]);
 }
 
-#[test]
 fn packed_weights_are_charged_per_nibble() {
     // 3 行 × 5 列 int4 = 15 元素 = 7.5 字节 → 8 字节。
     let formula = Formula::new(
@@ -326,7 +304,6 @@ fn packed_weights_are_charged_per_nibble() {
     assert_eq!(cost.write, 3 * 4);
 }
 
-#[test]
 fn a_grouped_axis_counts_traffic_but_not_arithmetic() {
     let formula = Formula::new(
         Expr::parse("nm,m,ng,n->n").expect("合法"),
@@ -357,7 +334,6 @@ fn a_grouped_axis_counts_traffic_but_not_arithmetic() {
     assert_eq!(cost.write, 8 * 4);
 }
 
-#[test]
 fn a_grouped_axis_cannot_be_an_output_axis() {
     let formula = Formula::new(
         Expr::parse("m,g->g").expect("合法"),
@@ -375,7 +351,6 @@ fn a_grouped_axis_cannot_be_an_output_axis() {
     assert!(error.to_string().contains("不能出现在输出里"), "{error}");
 }
 
-#[test]
 fn a_scalar_expression_reduces_to_one_element() {
     let formula = Formula::new(
         Expr::parse("m,m->").expect("合法"),
@@ -393,7 +368,6 @@ fn a_scalar_expression_reduces_to_one_element() {
     assert_eq!(cost.write, 0, "标量输出不在缓冲里");
 }
 
-#[test]
 fn a_missing_extent_is_reported_with_its_label() {
     let formula = matmul();
     let error = formula
@@ -402,7 +376,6 @@ fn a_missing_extent_is_reported_with_its_label() {
     assert!(error.to_string().contains("轴 `k`"), "{error}");
 }
 
-#[test]
 fn an_extent_that_the_expression_never_mentions_is_rejected() {
     let formula = matmul();
     let error = formula
@@ -411,7 +384,6 @@ fn an_extent_that_the_expression_never_mentions_is_rejected() {
     assert!(error.to_string().contains("`z`"), "{error}");
 }
 
-#[test]
 fn an_operand_count_mismatch_is_rejected() {
     let error = Formula::new(
         Expr::parse("ij,jk,ik->ik").expect("合法"),
@@ -421,7 +393,6 @@ fn an_operand_count_mismatch_is_rejected() {
     assert!(error.to_string().contains("3 项"), "{error}");
 }
 
-#[test]
 fn two_writes_are_rejected() {
     let error = Formula::new(
         Expr::parse("ij,jk,ik->ik").expect("合法"),
@@ -435,7 +406,6 @@ fn two_writes_are_rejected() {
     assert!(error.to_string().contains("多个写入操作数"), "{error}");
 }
 
-#[test]
 fn a_write_that_targets_a_reduced_axis_is_rejected() {
     let error = Formula::new(
         Expr::parse("ij,jk,ik->ik").expect("合法"),
@@ -460,7 +430,6 @@ fn a_write_that_targets_a_reduced_axis_is_rejected() {
     assert!(error.to_string().contains("轴 `j`"), "{error}");
 }
 
-#[test]
 fn a_repeated_operand_name_is_rejected() {
     let error = Formula::new(
         Expr::parse("ij,jk,ik->ik").expect("合法"),
@@ -474,10 +443,10 @@ fn a_repeated_operand_name_is_rejected() {
     assert!(error.to_string().contains("两次"), "{error}");
 }
 
-#[test]
 fn the_operands_keep_their_declared_direction_and_width() {
     let operand = Operand::new("w", Bits::Four, Access::Write);
     assert_eq!(operand.name(), "w");
     assert_eq!(operand.bits(), Bits::Four);
     assert_eq!(operand.access(), Access::Write);
+}
 }

@@ -31,7 +31,7 @@ impl Host for Fake {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn specs_line_up_with_the_rows() {
     assert_eq!(Row::ALL.len(), SPECS.len(), "六行不缺不多");
     for (idx, row) in Row::ALL.iter().enumerate() {
@@ -45,13 +45,11 @@ fn specs_line_up_with_the_rows() {
     }
 }
 
-#[test]
 fn the_six_rows_come_in_the_contract_order() {
     let names: Vec<&str> = Row::ALL.iter().map(|row| row.as_str()).collect();
     assert_eq!(names, ["cuda", "hip", "metal", "gpu", "x86", "arm"]);
 }
 
-#[test]
 fn gpu_rows_speak_homogeneous_abi_and_cpu_rows_ordered_dot() {
     for &row in Row::ALL {
         let expected = if row.compiler() || row == Row::Gpu {
@@ -64,7 +62,6 @@ fn gpu_rows_speak_homogeneous_abi_and_cpu_rows_ordered_dot() {
     assert!(!Row::X86.primitive().is_empty(), "原语不能是空话");
 }
 
-#[test]
 fn vulkan_and_sycl_map_into_the_gpu_row() {
     for language in ["vulkan", "SYCL", " spirv ", "gpu"] {
         assert_eq!(Row::from_language(language), Some(Row::Gpu), "{language}");
@@ -78,7 +75,6 @@ fn vulkan_and_sycl_map_into_the_gpu_row() {
     assert_eq!(Row::from_language("rocm"), Some(Row::Hip));
 }
 
-#[test]
 fn every_row_is_audited_even_when_the_host_has_nothing() {
     let host = Fake::bare(Arch::Other);
     let ledger = audit(&host);
@@ -95,7 +91,6 @@ fn every_row_is_audited_even_when_the_host_has_nothing() {
     }
 }
 
-#[test]
 fn a_cpu_row_is_covered_by_the_architecture_alone() {
     let host = Fake::bare(Arch::Aarch64);
     let arm = standing(Row::Arm, &host);
@@ -110,7 +105,6 @@ fn a_cpu_row_is_covered_by_the_architecture_alone() {
     );
 }
 
-#[test]
 fn a_device_row_needs_both_the_device_and_the_compiler() {
     let device_only = Fake {
         arch: Arch::Aarch64,
@@ -136,7 +130,6 @@ fn a_device_row_needs_both_the_device_and_the_compiler() {
     assert!(evidence.contains("CUTLASS/WGMMA"), "{evidence}");
 }
 
-#[test]
 fn the_gpu_row_self_certifies_on_the_vendor_primitive() {
     let host = Fake {
         arch: Arch::X86_64,
@@ -151,7 +144,6 @@ fn the_gpu_row_self_certifies_on_the_vendor_primitive() {
     assert_eq!(gpu.evidence(), Some(Row::Gpu.primitive()));
 }
 
-#[test]
 fn require_reports_e_plat_instead_of_passing() {
     let host = Fake::bare(Arch::Aarch64);
     let error = require(Row::Cuda, &host).expect_err("缺设备必须开门失败");
@@ -163,7 +155,6 @@ fn require_reports_e_plat_instead_of_passing() {
     require(Row::Arm, &host).expect("架构覆盖的行必须放行");
 }
 
-#[test]
 fn stable_short_names() {
     assert_eq!(
         Standing::Covered {
@@ -178,7 +169,6 @@ fn stable_short_names() {
     assert_eq!(Arch::Other.name(), "other");
 }
 
-#[test]
 fn the_machine_tells_this_host_without_guessing() {
     let host = Machine;
     assert_eq!(host.arch(), Arch::of_host(), "架构只从一处读");
@@ -214,4 +204,5 @@ fn the_machine_tells_this_host_without_guessing() {
             assert!(!ledger[Row::X86 as usize].is_covered());
         }
     }
+}
 }

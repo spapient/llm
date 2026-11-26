@@ -161,7 +161,7 @@ impl Fixture {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn compute_matches_the_operator_reference_bit_for_bit() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -188,7 +188,6 @@ fn compute_matches_the_operator_reference_bit_for_bit() {
     );
 }
 
-#[test]
 fn freeing_returns_the_buf_and_lowers_live_immediately() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -214,7 +213,6 @@ fn freeing_returns_the_buf_and_lowers_live_immediately() {
     assert_eq!(store.live(), RESIDENT + activation);
 }
 
-#[test]
 fn replaying_into_a_reused_buf_reproduces_the_same_values() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -227,7 +225,6 @@ fn replaying_into_a_reused_buf_reproduces_the_same_values() {
     assert_eq!(first, run(&mut store), "复用块不得留下上一轮的任何一项");
 }
 
-#[test]
 fn a_released_input_is_never_read_as_a_value() {
     let fixture = Fixture::new(2);
     let mut store = fixture.store();
@@ -242,7 +239,6 @@ fn a_released_input_is_never_read_as_a_value() {
     assert_eq!(store.live(), RESIDENT, "失败的这一次没有留下任何占用");
 }
 
-#[test]
 fn a_variable_without_a_registered_shape_is_rejected() {
     let fixture = Fixture::new(1);
     let mut store = Bufs::new(Sizes::new(fixture.tape.vars()), Reference);
@@ -252,7 +248,6 @@ fn a_variable_without_a_registered_shape_is_rejected() {
     assert_eq!(error.code(), Code::Internal);
 }
 
-#[test]
 fn an_element_type_without_scalar_storage_is_unsupported() {
     let mut pool = Pool::default();
     let error = pool
@@ -261,7 +256,6 @@ fn an_element_type_without_scalar_storage_is_unsupported() {
     assert_eq!(error.code(), Code::Unsupported);
 }
 
-#[test]
 fn a_loaded_block_must_match_what_the_shape_table_says() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -276,7 +270,6 @@ fn a_loaded_block_must_match_what_the_shape_table_says() {
 }
 
 /// 没登记形状的变量不能绕过校验：否则任意长度、任意类型的数据都能占住一个槽位。
-#[test]
 fn a_variable_without_registered_metadata_cannot_be_loaded() {
     let mut tape = Tape::new();
     let (first, gap) = (tape.parameter(), tape.parameter());
@@ -292,7 +285,6 @@ fn a_variable_without_registered_metadata_cannot_be_loaded() {
 }
 
 /// 大到分配不出来的形状必须是错误，而不是把宿主进程 abort 掉：形状可能就是从文件头读来的。
-#[test]
 fn an_impossibly_large_output_shape_is_an_error_rather_than_an_abort() {
     let mut tape = Tape::new();
     let (x, y) = (tape.parameter(), tape.parameter());
@@ -311,7 +303,6 @@ fn an_impossibly_large_output_shape_is_an_error_rather_than_an_abort() {
     assert!(store.value(y).is_none());
 }
 
-#[test]
 fn an_unknown_operator_is_unsupported_rather_than_silently_zero() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -326,7 +317,6 @@ fn an_unknown_operator_is_unsupported_rather_than_silently_zero() {
     assert_eq!(store.live(), RESIDENT);
 }
 
-#[test]
 fn a_plan_drives_the_store_and_every_replay_matches_the_forward() {
     let fixture = Fixture::new(12);
     let mut store = fixture.store();
@@ -388,7 +378,6 @@ fn a_plan_drives_the_store_and_every_replay_matches_the_forward() {
     );
 }
 
-#[test]
 fn many_rounds_do_not_grow_the_pool() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -402,7 +391,6 @@ fn many_rounds_do_not_grow_the_pool() {
     }
 }
 
-#[test]
 fn clear_returns_everything_and_resets_the_peak() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -425,7 +413,6 @@ fn clear_returns_everything_and_resets_the_peak() {
 }
 
 /// 注册表里有 `gemv_f32`，参考内核就必须有它——两张表由编译期断言锁在一起。
-#[test]
 fn the_second_registered_operator_replays_like_the_first() {
     const N: usize = WIDTH;
     let mut tape = Tape::new();
@@ -456,7 +443,6 @@ fn the_second_registered_operator_replays_like_the_first() {
 }
 
 /// 元数与 lane 的校验只写一份（`Inputs` 的单态化拆包），且失败的那次不留下占用。
-#[test]
 fn a_kernel_signature_mismatch_names_the_slot() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
@@ -477,7 +463,6 @@ fn a_kernel_signature_mismatch_names_the_slot() {
 
 /// 一条 decode 主路径的三算子链：`gemv_f32 → rope_f32 → softmax_f32` 串在同一张图上，
 /// 训练缓冲逐节点算出的末端值，与手工逐环调用算子参考逐位一致。
-#[test]
 fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
     const N: usize = 4;
     let mut tape = Tape::new();
@@ -520,6 +505,7 @@ fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
         expected,
         "三算子链末端必须与逐环参考逐位一致"
     );
+}
 }
 
 /// 类型化算子入口：`OperatorSetOps` 与字符串派发逐元素一致。

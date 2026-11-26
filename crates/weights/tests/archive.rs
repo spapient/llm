@@ -13,21 +13,22 @@ mod malformed_tests {
 
     /// fuzz 实测崩溃产物：段计数被篡改为 `u32::MAX`，剩余字节远不够这么多描述符。
     /// 旧实现按计数直接 `with_capacity` 触发约 39 GiB 分配；现在计数先按剩余字节粗查。
-    /// 夹具按 v2 `.u` 魔数与版本写头，正文沿用原崩溃字节。
-    const FUZZ_CRASH: [u8; 114] = [
-        0x2E, 0x75, 0x00, 0x00, 0x02, 0x00, 0x03, 0x00, 0x00, 0x00, 0x06, 0xff, 0xff, 0xff, 0xff,
-        0x01, 0x01, 0x77, 0x14, 0x02, 0x02, 0x03, 0x00, 0x00, 0x18, 0xa2, 0x94, 0x87, 0x9e, 0x0a,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x80, 0x60, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x60, 0x64, 0x35,
-    ];
+    /// 稀疏非零段保持原始字节，其余正文显式零填充，避免无意义的长串十六进制零。
+    fn fuzz_crash() -> [u8; 114] {
+        let mut bytes = [0; 114];
+        bytes[..30].copy_from_slice(&[
+            0x2E, 0x75, 0x00, 0x00, 0x02, 0x00, 0x03, 0x00, 0x00, 0x00, 0x06, 0xff, 0xff, 0xff,
+            0xff, 0x01, 0x01, 0x77, 0x14, 0x02, 0x02, 0x03, 0x00, 0x00, 0x18, 0xa2, 0x94, 0x87,
+            0x9e, 0x0a,
+        ]);
+        bytes[50..53].copy_from_slice(&[0x80, 0x60, 0x64]);
+        bytes[110..].copy_from_slice(&[0x80, 0x60, 0x64, 0x35]);
+        bytes
+    }
 
     #[test]
     fn a_count_exceeding_remaining_bytes_is_rejected_not_an_oom() {
-        let error = Archive::parse(&FUZZ_CRASH).expect_err("谎报计数必须报错");
+        let error = Archive::parse(&fuzz_crash()).expect_err("谎报计数必须报错");
 
         assert_eq!(error.code(), Code::Invalid);
 
@@ -46,8 +47,8 @@ mod cow_tests {
 
     use crate::writer::Writer;
 
+    testkit::test_cases! {
     /// 关闭压缩写出的段必然是 `Store`：`load` 必须返回 `Cow::Borrowed`，不复制逻辑字节。
-    #[test]
     fn store_segment_loads_as_borrowed() {
         let mut w = Writer::new();
 
@@ -70,7 +71,6 @@ mod cow_tests {
     }
 
     /// 高偏斜 U8 段经 rANS 严格变小，写端选 `Rans`：`load` 必须返回 `Cow::Owned` 解压缓冲。
-    #[test]
     fn rans_segment_loads_as_owned() {
         let mut sparse = vec![0u8; 4000];
 
@@ -100,7 +100,6 @@ mod cow_tests {
     /// `store` 的帧长由容器自己声明，没有别的环节会拿它和描述符推出的逻辑长度比对：一段宣称
     /// 自己有 64 字节、实际只存了 4 字节的帧必须被 `load` 挡下，否则度量按描述符报
     /// `lossless=true`、`settle` 按往返报 `bitwise=false`，同一份字节两种结论。
-    #[test]
     fn a_store_frame_shorter_than_its_descriptor_is_rejected() {
         let frame = [0u8; 4];
 
@@ -110,13 +109,13 @@ mod cow_tests {
     }
 
     /// 长度一致时 `store` 仍是零拷贝借用——加核对不能把这条路径变成复制。
-    #[test]
     fn a_store_frame_of_the_declared_length_still_borrows() {
         let frame = [7u8; 8];
 
         let cow = decode_frame(&frame, Codec::Store, 8).expect("长度一致");
 
         assert!(matches!(cow, Cow::Borrowed(_)), "Store 段必须借用");
+    }
     }
 }
 
@@ -186,7 +185,7 @@ mod ref_tests {
         body
     }
 
-    #[test]
+    testkit::test_cases! {
     fn equal_segments_share_one_inline_frame() {
         let a = f32_segment("a", &[1.0, 2.0]);
 
@@ -222,7 +221,6 @@ mod ref_tests {
         assert_eq!(metrics.ref_saved_bytes(), 8);
     }
 
-    #[test]
     fn dangling_reference_is_rejected() {
         let raw = [
             Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
@@ -236,7 +234,6 @@ mod ref_tests {
         assert!(error.to_string().contains("越界"), "{error}");
     }
 
-    #[test]
     fn self_reference_is_rejected() {
         let raw = [
             Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
@@ -250,7 +247,6 @@ mod ref_tests {
         assert!(error.to_string().contains("自引用"), "{error}");
     }
 
-    #[test]
     fn reference_to_reference_is_rejected() {
         let raw = [
             Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
@@ -265,7 +261,6 @@ mod ref_tests {
         assert!(error.to_string().contains("引用"), "{error}");
     }
 
-    #[test]
     fn reference_cycle_is_rejected() {
         let raw = [
             Raw::Ref(f32_segment("a", &[1.0]), 1),
@@ -277,7 +272,6 @@ mod ref_tests {
         assert_eq!(error.code(), Code::Invalid);
     }
 
-    #[test]
     fn mismatched_reference_metadata_is_rejected() {
         let raw = [
             Raw::Inline(
@@ -294,7 +288,6 @@ mod ref_tests {
         assert!(error.to_string().contains("元数据"), "{error}");
     }
 
-    #[test]
     fn duplicate_names_are_rejected() {
         let raw = [
             Raw::Inline(f32_segment("w", &[1.0]), f32_segment("w", &[1.0]).data),
@@ -307,6 +300,7 @@ mod ref_tests {
 
         assert!(error.to_string().contains("重复"), "{error}");
     }
+    }
 }
 
 #[cfg(test)]
@@ -316,7 +310,7 @@ mod metrics_tests {
 
     use crate::testutil::{archive, f32_segment};
 
-    #[test]
+    testkit::test_cases! {
     fn metrics_are_computed_from_live_bytes() {
         let segment = f32_segment("w", &[1.0, 2.0, 3.0]);
 
@@ -343,7 +337,6 @@ mod metrics_tests {
         assert_eq!(metrics.ref_saved_bytes(), 0);
     }
 
-    #[test]
     fn a_quantized_segment_is_not_lossless() {
         let quant = Quant::new(1, 0, 32, false, Wire::F16, None).expect("方案");
 
@@ -355,6 +348,7 @@ mod metrics_tests {
         let archive = Archive::parse(&bytes).expect("合法容器");
 
         assert!(!archive.metrics().expect("度量").lossless());
+    }
     }
 
     /// 按验收口径直造一份度量：`1/24` 门只有精确取值才谈得上边界，靠真实容器造不出来。
@@ -377,7 +371,7 @@ mod metrics_tests {
         }
     }
 
-    #[test]
+    testkit::test_cases! {
     fn ratio_param_divides_by_the_parameter_level_denominator() {
         let metrics = metrics_of(12, 3, true);
 
@@ -387,7 +381,6 @@ mod metrics_tests {
         assert_eq!(metrics.ratio_param(), metrics.ratio());
     }
 
-    #[test]
     fn the_e8_gate_accepts_exactly_one_over_twenty_four_and_not_one_byte_more() {
         // 12 参数 ⇒ 分母 24 字节；1 字节正好落在门上，2 字节即出界。
         assert_eq!(metrics_of(12, 1, true).ratio_param(), crate::E8_RATIO);
@@ -397,12 +390,10 @@ mod metrics_tests {
         assert!(!metrics_of(12, 2, true).e8_pass());
     }
 
-    #[test]
     fn a_lossy_artifact_never_passes_the_e8_gate_however_small_it_is() {
         assert!(!metrics_of(12, 1, false).e8_pass());
     }
 
-    #[test]
     fn an_empty_artifact_does_not_pass_the_e8_gate_vacuously() {
         let empty = metrics_of(0, 0, true);
 
@@ -416,7 +407,6 @@ mod metrics_tests {
     /// 走的是生产同一条路——导入 → 写 `.u` → 解析 → **整表解码** → 由落盘字节现算度量与裁决。
     /// 解码一步不省：`e8_pass` 是"账"，逐位还原才是"证"，两件一起打印才算一次 E8 运行。
     /// 没给变量就直接返回（这条是基准而非回归用例，不该在没有样本的机器上失败）。
-    #[test]
     #[ignore = "需要真实 safetensors：E8_WITNESS=<路径>"]
     fn a_real_checkpoint_goes_through_the_e8_gate() {
         let Ok(source) = std::env::var("E8_WITNESS") else {
@@ -487,4 +477,318 @@ mod metrics_tests {
 
         assert!(metrics.lossless(), "五轴选码与去重都必须逐位无损");
     }
+    }
+}
+
+// ---- proof ----
+
+/// 测试用一次性摘要，包装流式结构。
+fn hash(data: &[u8]) -> Digest {
+    let mut ctx = Sha256::new();
+
+    ctx.update(data);
+
+    ctx.finish()
+}
+
+fn hex(digest: Digest) -> String {
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+testkit::test_cases! {
+fn empty_vector() {
+    assert_eq!(
+        hex(hash(b"")),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+}
+
+fn abc_vector() {
+    assert_eq!(
+        hex(hash(b"abc")),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}
+
+fn two_block_vector() {
+    // 448 位（56 字节）恰好落在填充边界，外加多块长度，覆盖双块路径。
+
+    let data = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+
+    assert_eq!(
+        hex(hash(data)),
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    );
+}
+
+fn streaming_equals_one_shot() {
+    let data = vec![0x5au8; 200];
+
+    let whole = hash(&data);
+
+    let mut ctx = Sha256::new();
+
+    let (chunks, remainder) = data.as_chunks::<7>();
+
+    for chunk in chunks {
+        ctx.update(chunk);
+    }
+
+    ctx.update(remainder);
+
+    assert_eq!(ctx.finish(), whole);
+}
+
+fn distinct_inputs_distinct_hashes() {
+    assert_ne!(hash(b"x"), hash(b"y"));
+}
+}
+
+fn leaves(names: &[&str]) -> Vec<Digest> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| leaf(name, &[i as u8; 16]))
+        .collect()
+}
+
+testkit::test_cases! {
+fn every_idx_proves_against_root() {
+    let names = ["a", "b", "c", "d", "e", "f", "g"];
+
+    let tree = leaves(&names);
+
+    let merkle_root = root(&tree);
+
+    for (idx, digest) in tree.iter().enumerate() {
+        let proof = prove(&tree, idx).expect("证明");
+
+        assert!(
+            verify_proof(digest, &proof, &merkle_root),
+            "下标 {idx} 应验证通过"
+        );
+
+        // 证明里回填的必须是叶子原位，不是折叠到最后的那层下标（每层减半后恒为 0）。
+        assert_eq!(proof.idx(), idx, "证明要记住叶子原位 {idx}");
+
+        // 证明长度为 ceil(log2 n)。
+
+        assert_eq!(proof.siblings.len(), 3);
+    }
+}
+
+fn proof_rejects_tampered_leaf() {
+    let tree = leaves(&["a", "b", "c", "d"]);
+
+    let merkle_root = root(&tree);
+
+    let proof = prove(&tree, 1).expect("证明");
+
+    let fake = leaf("b", &[0xFF; 16]);
+
+    assert!(!verify_proof(&fake, &proof, &merkle_root));
+}
+
+fn proof_rejects_wrong_root() {
+    let tree = leaves(&["a", "b", "c"]);
+
+    let other = leaves(&["x", "y", "z"]);
+
+    let proof = prove(&tree, 0).expect("证明");
+
+    assert!(!verify_proof(&tree[0], &proof, &root(&other)));
+}
+
+fn out_of_range_proof_is_none() {
+    let tree = leaves(&["a", "b"]);
+
+    assert!(prove(&tree, 5).is_none());
+}
+
+fn name_binding_blocks_swap() {
+    // 同内容不同名的叶子哈希必须不同。
+
+    assert_ne!(leaf("x", &[1; 8]), leaf("y", &[1; 8]));
+}
+
+fn empty_root_is_zero() {
+    assert_eq!(root(&[]), [0u8; 32]);
+}
+}
+
+// ---- lifecycle ----
+
+use crate::gguf::Gguf;
+use crate::import::{segments_from_gguf, segments_from_torch};
+use crate::testutil::{archive, f32_segment, real_bin_bytes};
+use crate::torch::Checkpoint;
+use crate::writer::Writer;
+use dtype::DType;
+
+testkit::test_cases! {
+fn release_strips_opt_and_marks_infer() {
+    let bytes = archive(vec![
+        f32_segment("w", &[1.0, 2.0]),
+        f32_segment("opt.m.w", &[0.5, 0.5]),
+    ]);
+    let src = Archive::parse(&bytes).expect("src");
+
+    let released = release(&src).expect("release");
+    let names: Vec<&str> = released.iter().map(|s| s.name()).collect();
+    assert!(names.contains(&"w"));
+    assert!(!names.iter().any(|n| is_opt(n)));
+
+    let released_bytes = archive(released);
+    let released_archive = Archive::parse(&released_bytes).expect("x");
+    assert_eq!(mode_of(&released_archive).expect("模式"), Mode::Infer);
+}
+
+fn missing_marker_defaults_infer() {
+    let bytes = archive(vec![f32_segment("w", &[1.0])]);
+    assert_eq!(
+        mode_of(&Archive::parse(&bytes).expect("a")).expect("模式"),
+        Mode::Infer
+    );
+}
+
+fn train_marker_roundtrips() {
+    let mut segments = vec![f32_segment("w", &[1.0])];
+    segments.push(Mode::Train.to_segment().expect("标记"));
+    let bytes = archive(segments);
+    let parsed = Archive::parse(&bytes).expect("a");
+    assert_eq!(mode_of(&parsed).expect("模式"), Mode::Train);
+}
+
+fn an_unknown_mode_code_is_rejected_not_fallen_back_to_infer() {
+    let bad = Segment::new(MODE_NAME, Wire::U8, vec![1], None, vec![7]).expect("段");
+    let bytes = archive(vec![f32_segment("w", &[1.0]), bad]);
+    let parsed = Archive::parse(&bytes).expect("a");
+    let error = mode_of(&parsed).expect_err("未知码必须报错");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(error.to_string().contains("Mode"), "{error}");
+}
+
+fn xor_roundtrip_recovers_cur() {
+    let base_bytes = archive(vec![f32_segment("w", &[1.0, 2.0, 3.0])]);
+    let base = Archive::parse(&base_bytes).expect("base");
+    let cur_bytes = archive(vec![f32_segment("w", &[1.0, 2.0, 3.5])]);
+    let cur = Archive::parse(&cur_bytes).expect("cur");
+
+    let patch_bytes = archive(diff(&base, &cur).expect("diff"));
+    let patch = Archive::parse(&patch_bytes).expect("patch");
+
+    let joined = join(&base, &patch).expect("join");
+    let expected = cur.load(&cur.segments()[0]).expect("cur 字节");
+    assert_eq!(joined[0].data, &expected[..]);
+}
+
+fn small_change_patch_is_smaller() {
+    let base_bytes = archive(vec![f32_segment("w", &[1.0; 4096])]);
+    let base = Archive::parse(&base_bytes).expect("base");
+    let mut changed = vec![1.0f32; 4096];
+    changed[10] = 1.0001;
+    let cur_bytes = archive(vec![f32_segment("w", &changed)]);
+    let cur = Archive::parse(&cur_bytes).expect("cur");
+
+    let mut w = Writer::new();
+    w.compress(true);
+    for seg in diff(&base, &cur).expect("diff") {
+        w.push(seg).expect("push");
+    }
+    assert!(w.finish(6).expect("patch").len() < cur_bytes.len());
+}
+
+fn missing_base_is_full_not_garbage() {
+    let base_bytes = archive(vec![f32_segment("a", &[1.0])]);
+    let base = Archive::parse(&base_bytes).expect("base");
+    let cur_bytes = archive(vec![f32_segment("b", &[9.0])]);
+    let cur = Archive::parse(&cur_bytes).expect("cur");
+
+    let patch = diff(&base, &cur).expect("diff");
+    assert_eq!(patch[0].name(), "b");
+    assert_eq!(patch[0].data, f32_segment("b", &[9.0]).data);
+}
+}
+
+// —— 格式 → 中性段流的桥接：`import::segments_from_*` 依赖本 crate 的 `Segment`，用例只能留在这里。
+use crate::gguf_fixture as fixture;
+
+testkit::test_cases! {
+fn keeps_torch_tensors_as_neutral_segments() {
+    let Some(raw) = real_bin_bytes() else {
+        return;
+    };
+    let file = Checkpoint::parse(&raw).expect("解析");
+    let segments = segments_from_torch(&file).expect("导入中性段流");
+    assert_eq!(segments.len(), file.tensors().len());
+    for (segment, tensor) in segments.iter().zip(file.tensors()) {
+        assert_eq!(segment.name(), tensor.name());
+        assert_eq!(segment.dtype(), tensor.dtype());
+        assert_eq!(segment.shape(), tensor.shape());
+        assert_eq!(segment.data, file.data(tensor).expect("字节"));
+    }
+}
+
+fn propagates_unreadable_torch_checkpoint() {
+    let error = Checkpoint::parse(b"definitely not a torch bin")
+        .and_then(|file| segments_from_torch(&file));
+    assert!(error.is_err(), "读不通的检查点必须显式失败");
+}
+
+fn maps_scalar_gguf_tensors_to_neutral_segments() {
+    let raw = fixture::plain();
+    let file = Gguf::parse(&raw).unwrap();
+    let segments = segments_from_gguf(&file).expect("标量张量可导入");
+    assert_eq!(segments.len(), 2);
+
+    let f32 = &segments[0];
+    assert_eq!(f32.name(), "f32.weight");
+    assert_eq!(f32.dtype(), DType::F32);
+    assert_eq!(f32.shape(), &[2]);
+    assert_eq!(f32.data.len(), 8);
+
+    let half = &segments[1];
+    assert_eq!(half.name(), "half.weight");
+    assert_eq!(half.dtype(), DType::F16);
+    assert_eq!(half.shape(), &[2]);
+    assert_eq!(half.data.len(), 4);
+}
+
+fn imports_every_block_kind_as_dequantized_f32() {
+    let raw = fixture::standard();
+    let file = Gguf::parse(&raw).unwrap();
+    let segments = segments_from_gguf(&file).expect("块量化在导入时反量化");
+    let values = |name: &str| -> Vec<f32> {
+        let segment = segments.iter().find(|s| s.name() == name).expect("段");
+        assert_eq!(segment.dtype(), DType::F32, "{name} 反量化后是 f32");
+        segment
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
+    };
+    assert_eq!(
+        values("q8.weight"),
+        (0..32).map(|i| i as f32 - 16.0).collect::<Vec<f32>>()
+    );
+    // 夹具的块量化是 d=1.0、min=0、scales 全 1、qs 全 0x21，数值按 GGML 规范手推：
+    // Q4_K 每 64 值是 32 个 1.0 后接 32 个 2.0；Q6_K 每 128 值是 64 个 -31.0 后接 64 个 -30.0。
+    for group in values("q4.weight").chunks(64) {
+        assert!(group[..32].iter().all(|&v| v == 1.0), "Q4_K 低位");
+        assert!(group[32..].iter().all(|&v| v == 2.0), "Q4_K 高位");
+    }
+    for group in values("q6.weight").chunks(128) {
+        assert!(group[..64].iter().all(|&v| v == -31.0), "Q6_K 低位");
+        assert!(group[64..].iter().all(|&v| v == -30.0), "Q6_K 高位");
+    }
+    // Q5_K 的 qh 全 0x5A：组 0/1 是 1.0/18.0，组 2/3 是 17.0/2.0。
+    for (g, chunk) in values("q5.weight").chunks(64).enumerate() {
+        let (low, high) = if g < 2 { (1.0, 18.0) } else { (17.0, 2.0) };
+        let (a, b) = chunk.split_at(32);
+        assert!(a.iter().all(|&v| v == low), "Q5_K 组 {g} 低位");
+        assert!(b.iter().all(|&v| v == high), "Q5_K 组 {g} 高位");
+    }
+}
 }

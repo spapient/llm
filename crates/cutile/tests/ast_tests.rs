@@ -3,8 +3,8 @@ use crate::builtin::Catalogue;
 use crate::kernel::{Arith, Expr, Kernel, Write};
 use crate::substitute;
 
+testkit::test_cases! {
 /// 双射门：全部内置算子 × 每个 tile × 每台设备，AST 路径与字符串路径逐字节相等。
-#[test]
 fn ast_renders_byte_identical_text() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     for profile in catalogue.profiles() {
@@ -27,7 +27,6 @@ fn ast_renders_byte_identical_text() {
 }
 
 /// 规范编码确定且对字段敏感：改任一节点都换编码。
-#[test]
 fn encode_is_stable_and_field_sensitive() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let op = catalogue.op("gemv_i4").expect("算子");
@@ -51,7 +50,6 @@ fn encode_is_stable_and_field_sensitive() {
 }
 
 /// 节点往返：owned 参数与借用参数视图一致，splice 结果不依赖走哪条路径。
-#[test]
 fn owned_args_splice_like_borrowed_args() {
     let borrowed = [
         Arg::Expr("a"),
@@ -69,7 +67,6 @@ fn owned_args_splice_like_borrowed_args() {
 ///
 /// 不依赖外部随机源：固定种子的 LCG 在任何机器上派生同一批扰动，缩进对齐与分号裁剪的边界
 /// 因此被反复对拍。只插入空白与分号、不碰 `$` 占位符，保证 splice 语义不变。
-#[test]
 fn fuzzed_fragments_keep_the_two_paths_identical() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let op = catalogue.op("gemv_i4").expect("算子");
@@ -93,6 +90,7 @@ fn fuzzed_fragments_keep_the_two_paths_identical() {
             assert_eq!(direct, render(&nodes), "fuzz 双射破裂（{combo}）");
         }
     }
+}
 }
 
 /// 确定性 LCG：无外部依赖的伪随机源。
@@ -140,7 +138,7 @@ fn lower_nodes(catalogue: &Catalogue, name: &str) -> Option<Kernel> {
     lower(op, &nodes)
 }
 
-#[test]
+testkit::test_cases! {
 fn lower_pointwise_arithmetic_to_ir() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     for (name, arith) in [
@@ -163,7 +161,6 @@ fn lower_pointwise_arithmetic_to_ir() {
     }
 }
 
-#[test]
 fn lower_reduce_sum_to_accumulating_ir() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let kernel = lower_nodes(&catalogue, "reduce_sum_f32").expect("求和归约应 lower");
@@ -175,7 +172,6 @@ fn lower_reduce_sum_to_accumulating_ir() {
     assert!(matches!(value, Expr::Load(buf) if buf == "a"));
 }
 
-#[test]
 fn templates_outside_the_lower_closed_set_stay_none() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let fragments = prof::builtin("cpu", "c").expect("CPU 片段");
@@ -205,4 +201,5 @@ fn templates_outside_the_lower_closed_set_stay_none() {
             );
         }
     }
+}
 }

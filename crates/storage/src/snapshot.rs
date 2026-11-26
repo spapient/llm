@@ -473,13 +473,5 @@ fn temp_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[path = "../tests/snapshot_support.rs"]
-mod snapshot_support;
-
-#[cfg(test)]
-#[path = "../tests/snapshot_roundtrip_tests.rs"]
-mod roundtrip_tests;
-
-#[cfg(test)]
-#[path = "../tests/snapshot_canonical_tests.rs"]
-mod canonical_tests;
+#[path = "../tests/snapshot_tests.rs"]
+mod tests;

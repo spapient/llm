@@ -308,7 +308,7 @@ fn collect_measured(root: &Path, directory: &Path, ids: &mut Vec<String>) {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn criterion_mean_estimate_parses_point_and_interval() {
     let text = r#"{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":3341.168991727609,"upper_bound":3394.9963879253296},"point_estimate":3365.7723866140363,"standard_error":13.81689390329594},"median":{"point_estimate":3320.82}}"#;
     let estimate = mean_estimate(text).expect("解析 mean 段");
@@ -317,8 +317,8 @@ fn criterion_mean_estimate_parses_point_and_interval() {
     assert!((estimate.upper - 3394.9963879253296).abs() < 1e-9);
 }
 
-#[test]
 fn a_missing_mean_interval_returns_none() {
     let text = r#"{"mean":{"point_estimate":1.0}}"#;
     assert!(mean_estimate(text).is_none());
+}
 }

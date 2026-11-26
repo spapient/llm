@@ -4,8 +4,8 @@ use crate::builtin::Catalogue;
 use crate::kernel::{Arith, LocalType, ScalarType};
 use crate::substitute::FragmentSet;
 
+testkit::test_cases! {
 /// 全量内置模板都走 `.k → Program → printer`，没有文本回退。
-#[test]
 fn every_builtin_template_lowers_to_verified_ir() {
     let catalogue = Catalogue::try_builtin().expect("内置目录");
     let profile = catalogue
@@ -64,7 +64,6 @@ fn every_builtin_template_lowers_to_verified_ir() {
 }
 
 /// 向量类型按真实后端能力 lowering，不把同一个名字当成所有目标的完成证据。
-#[test]
 fn vector_program_uses_registered_target_lowerings_only() {
     let catalogue = Catalogue::try_builtin().expect("内置目录");
     let profile = catalogue.profile("cpu").expect("CPU 档案");
@@ -91,7 +90,6 @@ fn vector_program_uses_registered_target_lowerings_only() {
     assert!(error.to_string().contains("no registered native float4"));
 }
 
-#[test]
 fn family_quantization_constants_are_available_to_templates() {
     let catalogue = Catalogue::try_builtin().expect("内置目录");
     let op = catalogue.op("gemv_i2").expect("量化 GEMV");
@@ -102,7 +100,6 @@ fn family_quantization_constants_are_available_to_templates() {
 }
 
 /// 活跃 `#error` 在 IR 构建期失败，不能流进后端源码。
-#[test]
 fn active_preprocessor_error_is_rejected_before_printing() {
     let catalogue = Catalogue::try_builtin().expect("内置目录");
     let profile = catalogue
@@ -121,7 +118,6 @@ fn active_preprocessor_error_is_rejected_before_printing() {
 }
 
 /// 通用程序也经过同一常量折叠与死形参通道。
-#[test]
 fn program_optimizer_folds_constants_and_drops_unused_parameters() {
     let catalogue = Catalogue::try_builtin().expect("内置目录");
     let profile = catalogue
@@ -158,6 +154,7 @@ fn program_optimizer_folds_constants_and_drops_unused_parameters() {
     let source = program.emit_k().expect("程序发射");
     assert!(source.contains("float folded = 3.0f"), "{source}");
     assert!(source.contains("void cutile_constant_kernel()"), "{source}");
+}
 }
 
 /// 仅为语法覆盖构造合成能力：所有类型仍经真实 `AtomTable` 与 `Provide::diff` 选择。

@@ -2,7 +2,7 @@ use super::*;
 use crate::fixtures::{catalogue, profile};
 use cutile::builtin::Catalogue;
 
-#[test]
+testkit::test_cases! {
 fn shape_validation_matches_the_operator_constraints() {
     let group = u64::from(model_for("gemv_i4").expect("有模型").group);
     assert_eq!(parse_shape("4096x4096", group).unwrap(), (4096, 4096));
@@ -11,7 +11,6 @@ fn shape_validation_matches_the_operator_constraints() {
     assert!(parse_shape("0x8", group).is_err());
 }
 
-#[test]
 fn the_shape_matrix_follows_the_operator_model() {
     let model = model_for("gemv_i4").expect("有模型");
     assert_eq!(verify_shapes(&model), vec![(32, 1), (64, 3), (4096, 4096)]);
@@ -23,7 +22,6 @@ fn the_shape_matrix_follows_the_operator_model() {
     assert_eq!(verify_shapes(&other), vec![(32, 1), (64, 3), (128, 64)]);
 }
 
-#[test]
 fn the_model_group_matches_the_declaration() {
     // 声明里的 `needs.quant.group` 是能力请求，模型里的 `group` 是样本与代价的取值；
     // 两者漂移会让 verify 在一组原语支撑不了的组大小上"通过"。
@@ -42,6 +40,7 @@ fn the_model_group_matches_the_declaration() {
         .expect("组大小是整数");
     assert_eq!(declared, model_for("gemv_i4").expect("有模型").group);
 }
+}
 
 // ---- execution_tests.rs ----
 
@@ -58,13 +57,12 @@ fn sample(m: usize, n: usize) -> Sample {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn check_sample_accepts_a_shape_on_the_group_grid() {
     check_sample(4, &sample(8, 5)).expect("8 是 group 4 的正整数倍");
     check_sample(1, &sample(1, 1)).expect("group=1 时任意正 m 都在网格上");
 }
 
-#[test]
 fn check_sample_rejects_zero_or_off_grid_shapes() {
     for bad in [sample(0, 5), sample(5, 0), sample(7, 5)] {
         assert_eq!(
@@ -77,7 +75,6 @@ fn check_sample_rejects_zero_or_off_grid_shapes() {
     }
 }
 
-#[test]
 fn check_parity_rejects_length_mismatch_and_drift() {
     assert_eq!(
         check_parity(&[1.0], &[1.0, 2.0], 0.1).unwrap_err().code(),
@@ -93,7 +90,6 @@ fn check_parity_rejects_length_mismatch_and_drift() {
     );
 }
 
-#[test]
 fn check_parity_reports_the_error_within_tolerance() {
     assert_eq!(check_parity(&[1.0], &[1.0], 0.1).expect("相等"), 0.0);
     // 样本取 1/16 网格上的数：`1.0625f32` 与 `1.0f32` 的差在 f32 里精确等于 0.0625，
@@ -101,6 +97,7 @@ fn check_parity_reports_the_error_within_tolerance() {
     // 与十进制 0.05 差 4.8e-8，任何 1e-9 级断言都会假失败——那是样本选错，不是实现有漂移。
     let err = check_parity(&[1.0625], &[1.0], 0.1).expect("6.25% 误差在 0.1 容差内");
     assert_eq!(err, 0.0625, "返回实测误差而不是只给布尔");
+}
 }
 
 /// 走真实 C 编译执行，并额外对拍朴素参考，避免 flash 内核与参考共享同一错误。
@@ -125,8 +122,8 @@ fn assert_cpu_matches(op: &str, sample: &Sample, reference: ReferenceFn) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+testkit::test_cases! {
 /// 注册声明 → 能力协商 → Program IR → C float4 → 编译执行的完整生产链。
-#[test]
 fn registered_f32x4_kernel_executes_and_matches_scalar_lanes() {
     let root = testkit::ScratchDir::new("shard-f32x4-pipeline");
     let catalogue = catalogue();
@@ -170,7 +167,6 @@ fn registered_f32x4_kernel_executes_and_matches_scalar_lanes() {
     assert_eq!(error.code(), Code::Invalid);
 }
 
-#[test]
 fn flash_attention_supports_head_widths_beyond_the_accumulator_block() {
     for d in [1, 64, 65, 128] {
         let sample = nn::conv::attention::sample(2, d);
@@ -182,7 +178,6 @@ fn flash_attention_supports_head_widths_beyond_the_accumulator_block() {
     }
 }
 
-#[test]
 fn decode_flash_attention_supports_head_widths_beyond_the_accumulator_block() {
     for d in [1, 64, 65, 128] {
         let sample = nn::conv::decode_attention::sample(2, d);
@@ -194,7 +189,6 @@ fn decode_flash_attention_supports_head_widths_beyond_the_accumulator_block() {
     }
 }
 
-#[test]
 fn spatial_kernels_match_their_default_models() {
     let cases: [(&str, Sample, ReferenceFn); 5] = [
         (
@@ -226,6 +220,7 @@ fn spatial_kernels_match_their_default_models() {
     for (name, sample, reference) in cases {
         assert_cpu_matches(name, &sample, reference);
     }
+}
 }
 
 /// 改声明常量后走同一条真实发射流水线；参考由调用方独立计算，不读默认模型。
@@ -296,7 +291,7 @@ const RECTANGULAR_POOL: &[(&str, &str)] = &[
     ("PW", "1"),
 ];
 
-#[test]
+testkit::test_cases! {
 fn configured_conv2d_supports_rectangular_strided_batches() {
     let mut sample = spatial_sample(2 * 3 * 5 * 2, 2 * 2 * 3 * 2);
     sample.n = 2;
@@ -347,7 +342,6 @@ fn configured_conv2d_supports_rectangular_strided_batches() {
     assert_configured_cpu_matches("conv2d_f32", CONFIG, &sample, &expected);
 }
 
-#[test]
 fn configured_adaptive_pool_supports_uneven_nhwc_windows() {
     let sample = spatial_sample(60, 24);
     let mut expected = vec![0.0; 24];
@@ -357,7 +351,6 @@ fn configured_adaptive_pool_supports_uneven_nhwc_windows() {
     assert_configured_cpu_matches("adaptive_pool_f32", RECTANGULAR_POOL, &sample, &expected);
 }
 
-#[test]
 fn configured_pool2d_supports_padding_strides_and_both_reductions() {
     let sample = spatial_sample(60, 24);
     let geom = nn::conv::ConvGeom {
@@ -385,7 +378,6 @@ fn configured_pool2d_supports_padding_strides_and_both_reductions() {
     assert_configured_cpu_matches("max_pool2d_f32", RECTANGULAR_POOL, &sample, &expected);
 }
 
-#[test]
 fn configured_interpolate_supports_single_pixel_axes_and_nhwc() {
     const CONFIG: &[(&str, &str)] = &[
         ("H", "1"),
@@ -406,6 +398,7 @@ fn configured_interpolate_supports_single_pixel_axes_and_nhwc() {
     .expect("通用插值参考");
     assert_configured_cpu_matches("interpolate_f32", CONFIG, &sample, &expected);
 }
+}
 
 // ---- gate_tests.rs ----
 
@@ -421,7 +414,7 @@ fn opencl() -> &'static LanguageFront {
         .expect("OpenCL 语法前端已登记")
 }
 
-#[test]
+testkit::test_cases! {
 fn a_witness_its_own_language_rejects_is_a_defect() {
     if toolchain::skip_without_host_compiler() {
         return;
@@ -464,7 +457,6 @@ fn a_witness_its_own_language_rejects_is_a_defect() {
 
 /// 昇腾前端的三条判据缺一条，解析的就不是同一门语言：`-xcce` 决定设备语言、`dav-c220` 决定
 /// 核芯（`id = "910b"`）、`-fsyntax-only` 决定只解析不产出。
-#[test]
 fn the_ascend_front_is_ccec_for_the_910b_core() {
     let entry = config()
         .gates
@@ -487,7 +479,6 @@ fn the_ascend_front_is_ccec_for_the_910b_core() {
 
 /// 前端是档案声明的那一个，不是宿主 C 编译器：本机没有 `ccec` 时门只能是 `Absent`（且指出缺的
 /// 是哪个程序），拿 `cc` 去解析只会把「没装 CANN」报成一条 C 语法错误——那是 `Rejected`。
-#[test]
 fn a_missing_declared_front_is_absent_not_rejected() {
     if toolchain::probe("ccec").is_some() {
         eprintln!("skip: 本机装了 `ccec`，缺席分支无从构造");
@@ -509,13 +500,14 @@ fn a_missing_declared_front_is_absent_not_rejected() {
         other => panic!("缺 `ccec` 时门不该是 `{other}`"),
     }
 }
+}
 
 // ---- 运行时配置校验 ----
 
 use crate::config::RuntimeConfig;
 use std::time::Duration;
 
-#[test]
+testkit::test_cases! {
 fn defaults_are_valid_and_cover_every_required_front() {
     let config = RuntimeConfig::default();
     config.validate().expect("默认配置必须合法");
@@ -532,7 +524,6 @@ fn defaults_are_valid_and_cover_every_required_front() {
     );
 }
 
-#[test]
 fn a_front_constructor_accepts_owned_and_borrowed_strings() {
     let borrowed = LanguageFront::new(Emit::C, ["clang"], ["-fsyntax-only"]);
     let owned = LanguageFront::new(
@@ -543,7 +534,6 @@ fn a_front_constructor_accepts_owned_and_borrowed_strings() {
     assert_eq!(borrowed, owned);
 }
 
-#[test]
 fn malformed_fronts_are_rejected_before_they_can_idx_an_empty_command() {
     for gate in [
         LanguageFront::new(Emit::C, [] as [&str; 0], ["-fsyntax-only"]),
@@ -558,7 +548,6 @@ fn malformed_fronts_are_rejected_before_they_can_idx_an_empty_command() {
     }
 }
 
-#[test]
 fn duplicate_languages_are_rejected_instead_of_using_the_first_row_silently() {
     let mut config = RuntimeConfig::default();
     let duplicate = config.gates[0].clone();
@@ -566,7 +555,6 @@ fn duplicate_languages_are_rejected_instead_of_using_the_first_row_silently() {
     assert!(config.validate().unwrap_err().to_string().contains("重复"));
 }
 
-#[test]
 fn every_invalid_threshold_and_zero_lock_wait_is_rejected() {
     for threshold in [f64::NAN, f64::INFINITY, -0.01, 1.01] {
         let config = RuntimeConfig {
@@ -580,6 +568,7 @@ fn every_invalid_threshold_and_zero_lock_wait_is_rejected() {
         ..RuntimeConfig::default()
     };
     assert_eq!(config.validate().unwrap_err().code(), Code::Invalid);
+}
 }
 
 // ---- fragments_tests.rs ----
@@ -622,10 +611,10 @@ fn units_of(catalogue: &Catalogue, profile: &Profile, dirs: &Dirs) -> Vec<(Strin
     units
 }
 
+testkit::test_cases! {
 /// 片段层只有 `witness.*` 过门，正文从来没被任何编译器看过——声明里写 `barrier`、正文是一句
 /// “留给 P3”，门一样绿。这条用例把判据钉在正文上：片段拼进翻译单元之后，这台设备**自己声明的
 /// 那门语言**必须收下它，否则片段就是占位。
-#[test]
 fn every_fragment_composes_into_a_translation_unit_its_language_accepts() {
     if toolchain::skip_without_host_compiler() {
         return;
@@ -681,7 +670,6 @@ fn every_fragment_composes_into_a_translation_unit_its_language_accepts() {
 }
 
 /// 反向验证：正文改坏之后判据必须变红，否则上一条的 green 不说明门在看正文。
-#[test]
 fn a_fragment_body_the_language_rejects_is_a_defect() {
     if toolchain::skip_without_host_compiler() {
         return;
@@ -729,7 +717,6 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
 }
 
 #[cfg(windows)]
-#[test]
 fn every_negotiable_intel_translation_unit_builds_on_uhd750() {
     let device = prof::device::opencl::OpenClDevice::new().expect("必须探测到 UHD 750");
     let catalogue = catalogue();
@@ -746,6 +733,7 @@ fn every_negotiable_intel_translation_unit_builds_on_uhd750() {
             .unwrap_or_else(|error| panic!("UHD 750 拒绝 `{name}`：{error}"));
     }
     eprintln!("UHD 750 实际编译 {} 份翻译单元", units.len());
+}
 }
 
 /// 复制一份片段层，把 `target` 的正文换成语言收不下的文本（声明行不动，拼进去的仍是一段片段）。

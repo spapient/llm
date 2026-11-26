@@ -1,7 +1,72 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+enum ProjectionPrecision {
+    Int2,
+    Int4,
+    Int8,
+}
+
+fn quantized_reference(
+    precision: ProjectionPrecision,
+    x: &[f32],
+    w: &[u8],
+    scales: &[f32; 1],
+) -> Vec<f32> {
+    let mut reference = vec![0.0; 1];
+    match precision {
+        ProjectionPrecision::Int2 => nn::gemv_i2::forward(
+            tensor::View::one(x),
+            w,
+            tensor::View::one(scales),
+            &mut reference,
+        ),
+        ProjectionPrecision::Int4 => nn::gemv_i4::forward(
+            tensor::View::one(x),
+            w,
+            tensor::View::one(scales),
+            &mut reference,
+        ),
+        ProjectionPrecision::Int8 => nn::gemv_i8::forward(
+            tensor::View::one(x),
+            w,
+            tensor::View::one(scales),
+            &mut reference,
+        ),
+    }
+    .expect("参考");
+    reference
+}
+
+fn quantized_projection_matches(precision: ProjectionPrecision) {
+    let x: Vec<f32> = (0..32).map(|idx| 1.0 + idx as f32 * 0.1).collect();
+    let modulus = if matches!(precision, ProjectionPrecision::Int2) {
+        4
+    } else {
+        5
+    };
+    let codes: Vec<i8> = (0..32).map(|idx| (idx as i8 % modulus) - 2).collect();
+    let scales = [0.5f32];
+    let (format, w) = match precision {
+        ProjectionPrecision::Int2 => (WeightFormat::INT2, pack_codes(2, &codes)),
+        ProjectionPrecision::Int4 => (WeightFormat::INT4, pack_codes(4, &codes)),
+        ProjectionPrecision::Int8 => (
+            WeightFormat::INT8,
+            codes.iter().map(|&code| code as u8).collect(),
+        ),
+    };
+    let reference = quantized_reference(precision, &x, &w, &scales);
+    let stack = Stack::new(vec![
+        Linear::with_format("blk.0", format, 32, 1).expect("层"),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert_quantized("blk.0.weight", w, "blk.0.weight_scale", scales.to_vec());
+    forward_close(stack, params, &x, &reference);
+}
+
+testkit::test_cases! {
 /// 两层 F32 线性链：装配出的图串行跑通，参考路径用同一批权重串行 gemv 重算。
-#[test]
 fn a_two_layer_chain_forward_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let (stack, params, w1, w2) = two_layer_f32_fixture();
@@ -14,7 +79,6 @@ fn a_two_layer_chain_forward_matches_the_reference() {
 }
 
 /// 装饰器叠在执行基座上：同一个模型换 `Trace<CpuExecutor>`，前向逐位不变，提交序可审计。
-#[test]
 fn a_decorated_executor_runs_the_same_model_and_records_submissions() {
     let x = [1.0, 2.0, 3.0];
     let (stack, params, ..) = two_layer_f32_fixture();
@@ -40,7 +104,6 @@ fn a_decorated_executor_runs_the_same_model_and_records_submissions() {
 }
 
 /// 描述表把编号映射回条目名与声明形状；激活缓冲没有条目名，形状只记单轴长度（D10 / ADR 0044）。
-#[test]
 fn descriptors_map_ids_back_to_entries_and_shapes() {
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
@@ -72,7 +135,6 @@ fn descriptors_map_ids_back_to_entries_and_shapes() {
 }
 
 /// 权重元素数与形状不符：装配期就拦住，不带进执行期。
-#[test]
 fn a_weight_length_mismatch_is_rejected_at_assembly() {
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
@@ -84,7 +146,6 @@ fn a_weight_length_mismatch_is_rejected_at_assembly() {
 }
 
 /// 参数表缺条目：装配期按名报 `Missing`。
-#[test]
 fn a_missing_weight_is_rejected_at_assembly() {
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
@@ -95,7 +156,6 @@ fn a_missing_weight_is_rejected_at_assembly() {
 }
 
 /// 量化（默认 int4）层配了稠密 f32 权重：装配期按 `Invalid` 拒绝，不把 f32 当打包字节解释。
-#[test]
 fn a_quantized_layer_with_dense_weights_is_rejected_at_assembly() {
     let stack = Stack::new(vec![Linear::new("blk.0", 32, 2).expect("层")]).expect("栈");
     let params = params_of(&[("blk.0.weight", vec![0.0; 64])]);
@@ -104,7 +164,6 @@ fn a_quantized_layer_with_dense_weights_is_rejected_at_assembly() {
 }
 
 /// 量化（默认 int4）层缺标度条目：装配期按 `Missing` 拒绝，不静默走单输入节点。
-#[test]
 fn a_quantized_layer_without_its_scale_is_rejected_at_assembly() {
     let stack = Stack::new(vec![Linear::new("blk.0", 32, 1).expect("层")]).expect("栈");
     let mut params = Params::new();
@@ -114,85 +173,22 @@ fn a_quantized_layer_without_its_scale_is_rejected_at_assembly() {
 }
 
 /// 量化 int2 投影装配端到端：每字节四码 + 标度，前向与 `gemv_i2` 参考对拍。
-#[test]
 fn a_quantized_int2_projection_assembles_and_matches_the_reference() {
-    let x: Vec<f32> = (0..32).map(|idx| 1.0 + idx as f32 * 0.1).collect();
-    let codes: Vec<i8> = (0..32).map(|idx| (idx as i8 % 4) - 2).collect();
-    let w = pack_codes(2, &codes);
-    let scales = [0.5f32];
-    let mut reference = vec![0.0; 1];
-    nn::gemv_i2::forward(
-        tensor::View::one(&x),
-        &w,
-        tensor::View::one(&scales),
-        &mut reference,
-    )
-    .expect("参考");
-
-    let stack = Stack::new(vec![
-        Linear::with_format("blk.0", WeightFormat::INT2, 32, 1).expect("层"),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
-    params.insert_quantized("blk.0.weight", w, "blk.0.weight_scale", scales.to_vec());
-
-    forward_close(stack, params, &x, &reference);
+    quantized_projection_matches(ProjectionPrecision::Int2);
 }
 
 /// 量化 int4 投影装配端到端：打包字节 + 标度两条驻留条目，前向与 `gemv_i4` 参考对拍。
-#[test]
 fn a_quantized_int4_projection_assembles_and_matches_the_reference() {
-    let x: Vec<f32> = (0..32).map(|idx| 1.0 + idx as f32 * 0.1).collect();
-    let codes: Vec<i8> = (0..32).map(|idx| (idx as i8 % 5) - 2).collect();
-    let w = pack_codes(4, &codes);
-    let scales = [0.5f32];
-    let mut reference = vec![0.0; 1];
-    nn::gemv_i4::forward(
-        tensor::View::one(&x),
-        &w,
-        tensor::View::one(&scales),
-        &mut reference,
-    )
-    .expect("参考");
-
-    let stack = Stack::new(vec![
-        Linear::with_format("blk.0", WeightFormat::INT4, 32, 1).expect("层"),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
-    params.insert_quantized("blk.0.weight", w, "blk.0.weight_scale", scales.to_vec());
-
-    forward_close(stack, params, &x, &reference);
+    quantized_projection_matches(ProjectionPrecision::Int4);
 }
 
 /// 量化 int8 投影装配端到端：逐元素字节 + 标度，前向与 `gemv_i8` 参考对拍。
-#[test]
 fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
-    let x: Vec<f32> = (0..32).map(|idx| 1.0 + idx as f32 * 0.1).collect();
-    let w: Vec<u8> = (0..32).map(|idx| ((idx as i8 % 5) - 2) as u8).collect();
-    let scales = [0.5f32];
-    let mut reference = vec![0.0; 1];
-    nn::gemv_i8::forward(
-        tensor::View::one(&x),
-        &w,
-        tensor::View::one(&scales),
-        &mut reference,
-    )
-    .expect("参考");
-
-    let stack = Stack::new(vec![
-        Linear::with_format("blk.0", WeightFormat::INT8, 32, 1).expect("层"),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
-    params.insert_quantized("blk.0.weight", w, "blk.0.weight_scale", scales.to_vec());
-
-    forward_close(stack, params, &x, &reference);
+    quantized_projection_matches(ProjectionPrecision::Int8);
 }
 
 /// 量化 int4 归档经 `from_stack` 全链装载：打包字节 + 标度两条条目按头部自动成对，
 /// 装配后前向与 `gemv_i4` 参考对拍——覆盖 `insert_named` 的成对登记与标度回链。
-#[test]
 fn a_quantized_int4_archive_loads_and_matches_the_reference() {
     let in_features = 32usize;
     let x: Vec<f32> = (0..in_features).map(|idx| 1.0 + idx as f32 * 0.1).collect();
@@ -230,7 +226,6 @@ fn a_quantized_int4_archive_loads_and_matches_the_reference() {
 }
 
 /// 层间宽度链断裂：上一层输出宽度对不上本层输入宽度，装配期报 `Invalid`。
-#[test]
 fn a_width_chain_break_is_rejected_at_assembly() {
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
@@ -246,7 +241,6 @@ fn a_width_chain_break_is_rejected_at_assembly() {
 }
 
 /// 内存归档装载：头部推出层栈、Loader 取出条目字节、解码进驻留表，装配后 forward 与串行参考对拍。
-#[test]
 fn entries_from_an_in_memory_archive_load_into_params() {
     let (x, bytes, reference) = two_layer_archive_fixture();
     let archive = Archive::parse(&bytes).expect("归档合法");
@@ -260,7 +254,6 @@ fn entries_from_an_in_memory_archive_load_into_params() {
 
 /// 归档同时实现 [`Reader`]：借用路径不经字节拷贝装载，装配后前向与串行参考对拍，
 /// 与 Loader 拷贝路径同判据、同产物。
-#[test]
 fn entries_from_a_reader_source_load_into_params() {
     let (x, bytes, reference) = two_layer_archive_fixture();
     let archive = Archive::parse(&bytes).expect("归档合法");
@@ -274,7 +267,6 @@ fn entries_from_a_reader_source_load_into_params() {
 
 /// 真实权重文件走装配根 [`CpuModel::from_path`]：打开头部 → 层栈 → 驻留参数 → 图装配，
 /// 前向与串行参考对拍；当前构建按后端类别走映射借用（Unix + mmap）或文件拷贝，产物同判据。
-#[test]
 fn a_real_weight_file_assembles_through_from_path() {
     let (x, bytes, reference) = two_layer_archive_fixture();
     let path = write_archive_file("from-path", &bytes);
@@ -285,7 +277,6 @@ fn a_real_weight_file_assembles_through_from_path() {
 }
 
 /// 头部找不到对应条目：装载期按名报 `Missing`，不带进装配期。
-#[test]
 fn a_missing_header_entry_is_reported_at_load() {
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
@@ -299,7 +290,6 @@ fn a_missing_header_entry_is_reported_at_load() {
 }
 
 /// 投影后接一元激活：装配图串行跑通，参考路径串行 `gemv → silu` 重算。
-#[test]
 fn a_projection_then_unary_activation_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -319,7 +309,6 @@ fn a_projection_then_unary_activation_matches_the_reference() {
 }
 
 /// 投影后接归一化：gamma 作为驻留权重整块装配，参考路径串行 `gemv → rmsnorm` 重算。
-#[test]
 fn a_projection_then_rmsnorm_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -348,7 +337,6 @@ fn a_projection_then_rmsnorm_matches_the_reference() {
 }
 
 /// 一元层宽度与上一层输出不等长：装配期报 `Invalid`。
-#[test]
 fn a_unary_width_chain_break_is_rejected_at_assembly() {
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -361,7 +349,6 @@ fn a_unary_width_chain_break_is_rejected_at_assembly() {
 }
 
 /// 归一化缺驻留 gamma：装配期按名报 `Missing`。
-#[test]
 fn a_missing_rmsnorm_gamma_is_reported_at_assembly() {
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -374,7 +361,6 @@ fn a_missing_rmsnorm_gamma_is_reported_at_assembly() {
 }
 
 /// 逐元素二元层：主链输入 + 旁路激活两路接线，参考路径对旁路持有张量逐元素相加。
-#[test]
 fn a_binary_layer_takes_a_bypass_activation_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -399,7 +385,6 @@ fn a_binary_layer_takes_a_bypass_activation_matches_the_reference() {
 }
 
 /// 逐元素乘法同族接线：参考路径对旁路持有张量逐元素相乘。
-#[test]
 fn a_binary_mul_layer_takes_a_bypass_activation_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -424,14 +409,12 @@ fn a_binary_mul_layer_takes_a_bypass_activation_matches_the_reference() {
 }
 
 /// 二元层前面没有可借用的旁路激活（首层即二元）：装配期报 `Invalid`，不静默走单输入。
-#[test]
 fn a_binary_layer_without_a_bypass_activation_is_rejected_at_assembly() {
     let stack = Stack::of(vec![Box::new(Add::new("res", 2).expect("层"))]).expect("栈");
     rejected_at_assembly(stack, Params::new(), Code::Invalid);
 }
 
 /// 非 F32 条目不在装载期解包；参数表留空，装配期按格式报 `Unsupported`。
-#[test]
 fn a_non_f32_entry_is_skipped_and_rejected_at_assembly() {
     let bytes = archive_of(&[ArchiveEntry {
         name: "blk.0.weight",
@@ -449,7 +432,6 @@ fn a_non_f32_entry_is_skipped_and_rejected_at_assembly() {
 
 /// 两层合成模型端到端：嵌入 → 注意力块（q/k/v + RoPE + decode 注意力 + 残差）→ 归一化 →
 /// 线性输出；CPU 参考数值链串行重算并与 `logits` 对拍。
-#[test]
 fn a_two_layer_composite_model_logits_match_the_reference() {
     let (vocab, hidden, kv, out) = (8, 8, 8, 2);
     let hist = 1;
@@ -519,7 +501,6 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
 }
 
 /// 合成模型宽度断裂：嵌入维度与块隐藏宽度对不上，装配期报 `Invalid`，不带进执行期。
-#[test]
 fn a_composite_width_break_is_rejected_at_assembly() {
     let stack = embed_block_stack(8, 4, 8, 2);
     let mut params = block_zero_params();
@@ -529,7 +510,6 @@ fn a_composite_width_break_is_rejected_at_assembly() {
 }
 
 /// 合成模型缺输出投影条目：装配期按名报 `Missing`，不 panic、不静默跳过。
-#[test]
 fn a_composite_missing_projection_weight_is_reported_at_assembly() {
     let stack = Stack::of(vec![
         Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
@@ -547,7 +527,6 @@ fn a_composite_missing_projection_weight_is_reported_at_assembly() {
 }
 
 /// 合成模型缺嵌入词表条目：装配期按名报 `Missing`，不 panic、不静默跳过。
-#[test]
 fn a_composite_missing_embedding_table_is_reported_at_assembly() {
     let stack = Stack::of(vec![
         Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
@@ -557,4 +536,5 @@ fn a_composite_missing_embedding_table_is_reported_at_assembly() {
     let params = params_of(&[("proj.weight", vec![0.0; 8])]);
 
     rejected_at_assembly(stack, params, Code::Missing);
+}
 }

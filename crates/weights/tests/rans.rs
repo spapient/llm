@@ -10,22 +10,19 @@ fn assert_roundtrip(src: &[u8]) {
     assert_eq!(back, src, "往返不一致");
 }
 
-#[test]
+testkit::test_cases! {
 fn empty_roundtrips() {
     assert_roundtrip(b"");
 }
 
-#[test]
 fn single_byte_roundtrips() {
     assert_roundtrip(&[42]);
 }
 
-#[test]
 fn repeated_value_roundtrips() {
     assert_roundtrip(&vec![7u8; 10_000]);
 }
 
-#[test]
 fn all_symbols_roundtrips() {
     let src: Vec<u8> = (0..=255u16).map(|b| b as u8).collect();
 
@@ -34,7 +31,6 @@ fn all_symbols_roundtrips() {
     assert_roundtrip(&src.repeat(64));
 }
 
-#[test]
 fn pseudo_random_roundtrips() {
     // 线性同余生成确定性的"高熵"字节，覆盖近似均匀分布。
 
@@ -51,7 +47,6 @@ fn pseudo_random_roundtrips() {
     assert_roundtrip(&src);
 }
 
-#[test]
 fn skewed_distribution_roundtrips() {
     // 90% 为 0，其余少量符号，压缩后应明显变小。
 
@@ -70,7 +65,6 @@ fn skewed_distribution_roundtrips() {
     assert_roundtrip(&src);
 }
 
-#[test]
 fn truncated_frame_is_rejected() {
     let frame = encode_rans(&vec![3u8; 1000]);
 
@@ -82,12 +76,10 @@ fn truncated_frame_is_rejected() {
     }
 }
 
-#[test]
 fn garbage_is_rejected() {
     assert!(decode_rans(&[0xFF; 64], 64).is_err());
 }
 
-#[test]
 fn a_trailing_extra_byte_is_rejected() {
     let mut frame = encode_rans(&vec![3u8; 1000]);
 
@@ -98,7 +90,6 @@ fn a_trailing_extra_byte_is_rejected() {
     assert!(error.to_string().contains("多余字节"), "{error}");
 }
 
-#[test]
 fn a_lying_length_is_rejected_before_allocating() {
     // 帧头的原始长度来自文件，不能当分配依据：把它改成 u32::MAX 之后必须当场拒绝，
 
@@ -113,7 +104,6 @@ fn a_lying_length_is_rejected_before_allocating() {
     assert!(error.to_string().contains("超过上限"), "{error}");
 }
 
-#[test]
 fn normalized_freq_sums_exactly() {
     let raw = [
         counts(&[1u8, 1, 2, 3, 3, 3]),
@@ -125,6 +115,7 @@ fn normalized_freq_sums_exactly() {
 
         assert_eq!(freq.iter().sum::<u32>(), TOTAL_FREQ);
     }
+}
 }
 
 /// 香农熵（bits/符号），无损压缩的物理下界。
@@ -171,7 +162,7 @@ fn payload_len(frame: &[u8]) -> usize {
     total
 }
 
-#[test]
+testkit::test_cases! {
 fn payload_approaches_entropy_bound() {
     // 确定性的偏斜分布：80% 为 0，其余在 4 个符号间，约 1 bit/符号。
 
@@ -205,7 +196,6 @@ fn payload_approaches_entropy_bound() {
     assert!(overhead <= 200.0, "头部开销 {overhead} 应为有界常数");
 }
 
-#[test]
 fn uniform_data_is_not_amplified() {
     // 近似均匀（熵≈8 bit）的数据：rans 帧不会比原始短，写端因此回退 store。
 
@@ -231,7 +221,6 @@ fn uniform_data_is_not_amplified() {
 ///
 /// 8M 字节偏斜分布（80% 为 0，其余 4 符号）`encode_rans` 与 `decode_rans` 分别计时，报 MB/s。5 轮取中位数，
 /// 只出数字、不做断言——吞吐随机器浮动。
-#[test]
 #[ignore = "吞吐基准：cargo test -p llm-weights --lib -- rans_throughput --release --ignored --nocapture"]
 fn rans_throughput() {
     let n = 8 * 1024 * 1024usize;
@@ -261,4 +250,5 @@ fn rans_throughput() {
         (n as f64 / enc[2]) / 1e6,
         (n as f64 / dec[2]) / 1e6
     );
+}
 }

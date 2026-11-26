@@ -834,6 +834,25 @@ impl Kernel {
 }
 
 #[cfg(test)]
+fn buf(name: &str, access: Access) -> Parameter {
+    Parameter {
+        name: name.to_string(),
+        ty: ValueType::Buf {
+            element: ScalarType::F32,
+            access,
+        },
+    }
+}
+
+#[cfg(test)]
+fn scalar(name: &str, ty: ScalarType) -> Parameter {
+    Parameter {
+        name: name.to_string(),
+        ty: ValueType::Scalar(ty),
+    }
+}
+
+#[cfg(test)]
 #[path = "../tests/ir_tests.rs"]
 mod ir_tests;
 

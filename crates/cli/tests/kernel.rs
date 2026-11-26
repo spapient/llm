@@ -4,7 +4,7 @@ fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(std::string::ToString::to_string).collect()
 }
 
-#[test]
+testkit::test_cases! {
 fn parses_each_subcommand_with_its_defaults() {
     assert_eq!(
         CutileCommand::parse(&args(&["doctor"])).unwrap(),
@@ -72,7 +72,6 @@ fn parses_each_subcommand_with_its_defaults() {
     );
 }
 
-#[test]
 fn bench_without_shape_leaves_it_to_the_operator() {
     // 缺省形状是算子的生产形状：文法里不再有一份方阵。
     assert_eq!(
@@ -86,7 +85,6 @@ fn bench_without_shape_leaves_it_to_the_operator() {
     );
 }
 
-#[test]
 fn unknown_arguments_are_rejected() {
     let error = CutileCommand::parse(&args(&["doctor", "--nope"])).unwrap_err();
     assert!(error.to_string().contains("未知参数"), "{error}");
@@ -95,14 +93,12 @@ fn unknown_arguments_are_rejected() {
     assert!(CutileCommand::parse(&[]).is_err(), "缺少子命令不猜");
 }
 
-#[test]
 fn options_belong_to_their_subcommand() {
     // `--shape` 只对 bench 有意义：写错子命令时报错，而不是静默忽略。
     let error = CutileCommand::parse(&args(&["verify", "--shape", "1024x64"])).unwrap_err();
     assert!(error.to_string().contains("未知参数"), "{error}");
 }
 
-#[test]
 fn a_flag_without_a_value_is_rejected() {
     let error = CutileCommand::parse(&args(&["doctor", "--device"])).unwrap_err();
     assert!(error.to_string().contains("缺少取值"), "{error}");
@@ -112,11 +108,11 @@ fn a_flag_without_a_value_is_rejected() {
     assert!(error.to_string().contains("字节数"), "{error}");
 }
 
-#[test]
 fn cache_needs_a_maintenance_action() {
     // `cache` 自己不是动作：缺子命令与未实现的子命令都报错，不静默当成 gc。
     let error = CutileCommand::parse(&args(&["cache"])).unwrap_err();
     assert!(error.to_string().contains("缺少子命令"), "{error}");
     let error = CutileCommand::parse(&args(&["cache", "rm"])).unwrap_err();
     assert!(error.to_string().contains("未知子命令"), "{error}");
+}
 }

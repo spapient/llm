@@ -1,6 +1,6 @@
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn panel_pads_labels_to_the_widest_row() {
     let panel = Panel::new("标题").row("op", "gemv").row("device", "cpu");
     let text = panel.render();
@@ -19,7 +19,6 @@ fn panel_pads_labels_to_the_widest_row() {
 
 /// 中英混排的面板按**显示列**对齐，不按字符数：「条目数」3 个字符占 6 列，与 10 列的
 /// `V_artifact` 并排时补 4 个空格才对齐。按 `chars().count()` 会补 7 个，两行的值列差 3 列。
-#[test]
 fn panel_aligns_east_asian_labels_by_display_columns() {
     let panel = Panel::new("t").row("条目数", "1").row("V_artifact", "2");
 
@@ -27,19 +26,16 @@ fn panel_aligns_east_asian_labels_by_display_columns() {
 }
 
 /// 数学符号属歧义宽度，终端按一列排：`×` 不能让整行多出一列。
-#[test]
 fn ambiguous_width_symbols_take_one_column() {
     assert_eq!(span("a×b"), 3);
     assert_eq!(span("条目数"), 6);
     assert_eq!(span("MiB"), 3);
 }
 
-#[test]
 fn panel_with_only_title_renders_one_line() {
     assert_eq!(Panel::new("空").render(), "空\n");
 }
 
-#[test]
 fn sheet_writes_header_separator_and_rows_in_one_place() {
     let grid = Sheet::new(["原语", "实现", "次数"])
         .align([Align::Left, Align::Left, Align::Right])
@@ -51,7 +47,6 @@ fn sheet_writes_header_separator_and_rows_in_one_place() {
     );
 }
 
-#[test]
 fn sheet_pads_short_rows_and_truncates_long_ones() {
     let grid = Sheet::new(["a", "b"]).row(["only"]).row(["x", "y", "z"]);
     let text = grid.render();
@@ -59,21 +54,19 @@ fn sheet_pads_short_rows_and_truncates_long_ones() {
     assert!(text.contains("| x | y |\n"), "{text}");
 }
 
-#[test]
 fn join_names_separates_with_dunhao_and_dashes_empty() {
     assert_eq!(join_names(std::iter::empty::<&str>()), "—");
     assert_eq!(join_names(["a", "b"].iter().copied()), "a、b");
 }
 
-#[test]
 fn byte_sizes_are_printable_next_to_the_fast_capacity() {
     assert_eq!(human_bytes(148), "148 B");
     assert_eq!(human_bytes(10_485_760), "10.0 MiB");
     assert_eq!(human_bytes(524_288), "512.0 KiB");
 }
 
-#[test]
 fn a_sub_microsecond_kernel_is_reported_in_nanoseconds() {
     assert_eq!(per_run(1.9), "1.9 ns/次");
     assert_eq!(per_run(13_300_000.0), "13.300 ms/次");
+}
 }

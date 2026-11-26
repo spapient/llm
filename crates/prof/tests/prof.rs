@@ -69,7 +69,7 @@ fn temp_dir(tag: &str) -> ScratchDir {
     ScratchDir::new(tag)
 }
 
-#[test]
+testkit::test_cases! {
 fn parses_builtin_cpu_profile() {
     let profile = Profile::parse(cpu()).expect("内置 CPU 档案必须可解析");
     assert_eq!(profile.meta.vendor, "cpu");
@@ -84,7 +84,6 @@ fn parses_builtin_cpu_profile() {
 /// `[needs]` 认 `m` / `bytes` / `extent` 三个名字，也认标量形式的 `dt` / `space`；档案层
 /// 若只认 `m` 与数组，那么同一份签名换个合法写法就会**静默少一个约束**——`space` 甚至
 /// 没有后续校验能把它捞回来（空集在协商里表现为"缺空间"，离原因很远）。
-#[test]
 fn a_provide_accepts_the_same_signature_spellings_as_a_need() {
     let profile = provide(&[
         "prim",
@@ -130,7 +129,6 @@ fn a_provide_accepts_the_same_signature_spellings_as_a_need() {
 }
 
 /// 非法取值要报错，不能当作"没写"；类型化视图不再容许动态表里的错误类型。
-#[test]
 fn a_signature_field_with_the_wrong_shape_is_an_error() {
     for name in ["space", "n"] {
         let error = provide(&[
@@ -150,7 +148,6 @@ fn a_signature_field_with_the_wrong_shape_is_an_error() {
 
 /// 一个维度只有一个名字：同时写 `m` 与 `bytes` 会让"哪个生效"取决于遍历顺序，
 /// 而档案是数据，不该有顺序语义。
-#[test]
 fn two_names_for_one_dimension_are_an_error() {
     let error = provide(&[
         "prim",
@@ -168,7 +165,6 @@ fn two_names_for_one_dimension_are_an_error() {
     assert!(error.to_string().contains("只能写一个"), "{error}");
 }
 
-#[test]
 fn builtin_cpu_profile_is_schema_valid() {
     let profile = Profile::parse(cpu()).expect("可解析");
     // 见证文件属于片段层（`crates/<device>`），本 crate 只校验 schema 与 `[units]`；
@@ -178,7 +174,6 @@ fn builtin_cpu_profile_is_schema_valid() {
 
 /// 属性键属于原语自己的签名：`sat` 是 `cvt` 的参数，`load` 写上它只会让档案看起来
 /// 更具体——协商只比对需求里出现的键，这条永远读不到。
-#[test]
 fn an_attr_key_must_belong_to_its_primitive() {
     let mut profile = Profile::parse(cpu()).expect("可解析");
     let load = profile
@@ -198,13 +193,11 @@ fn an_attr_key_must_belong_to_its_primitive() {
     );
 }
 
-#[test]
 fn unknown_emit_is_rejected_by_the_closed_set() {
     assert_eq!(Emit::parse("nope"), None);
     assert_eq!(Emit::parse("cuda"), Some(Emit::Cuda));
 }
 
-#[test]
 fn l2_without_witness_is_rejected() {
     let mut profile = Profile::parse(cpu()).expect("可解析");
     for provide in &mut profile.provides {
@@ -220,7 +213,6 @@ fn l2_without_witness_is_rejected() {
 
 /// 协商双证据口径：档案等级达到 L2+ 且形状覆盖才满足；L0/L1 即使形状覆盖也被拒，不许降级成
 /// "形状对上就算有"。见证存在性由 [`l2_without_witness_is_rejected`] 与 L3 用例守住。
-#[test]
 fn negotiate_rejects_unverified_suppliers_even_when_covering() {
     let mut profile = Profile::parse(cpu()).expect("可解析");
     let prim = profile.provides[0].prim;
@@ -239,7 +231,6 @@ fn negotiate_rejects_unverified_suppliers_even_when_covering() {
 }
 
 /// L3 与 L2 同属已验证等级：缺见证同样在校验期报 `Witness`，不许只对 L2 守见证口径。
-#[test]
 fn l3_without_witness_is_rejected_by_validation() {
     let mut profile = Profile::parse(cpu()).expect("可解析");
     for provide in &mut profile.provides {
@@ -255,7 +246,6 @@ fn l3_without_witness_is_rejected_by_validation() {
     );
 }
 
-#[test]
 fn a_peak_must_equal_its_own_formula() {
     // 直接改视图里的数值：与推导式不一致时仍由同一峰值校验拒绝。
     let mut view = *cpu();
@@ -265,7 +255,6 @@ fn a_peak_must_equal_its_own_formula() {
     assert!(error.to_string().contains("不一致"), "{error}");
 }
 
-#[test]
 fn a_peak_formula_with_a_unit_name_is_rejected() {
     let formula = "8 cores * 2.6 GHz * 8 lanes * 2 flop";
     let mut view = *cpu();
@@ -275,7 +264,6 @@ fn a_peak_formula_with_a_unit_name_is_rejected() {
     assert!(error.to_string().contains("求值失败"), "{error}");
 }
 
-#[test]
 fn formulas_are_four_operations_with_parentheses() {
     assert!((eval_expression("2*3+4").expect("可求值") - 10.0).abs() < 1e-9);
     assert!((eval_expression("(1+2)*3/4").expect("可求值") - 2.25).abs() < 1e-9);
@@ -287,7 +275,6 @@ fn formulas_are_four_operations_with_parentheses() {
 }
 
 /// 推导式边界：空串、纯空白、单符号、嵌套括号、重复运算符与越界写法都必须带说明拒绝。
-#[test]
 fn formulas_reject_saturated_and_degenerate_inputs_with_a_message() {
     let cases: &[&str] = &[
         "", "   ", "+", "(", ")", "**", "1..2", "abc", "1+", "((1+2))", "2/3/4",
@@ -308,7 +295,6 @@ fn formulas_reject_saturated_and_degenerate_inputs_with_a_message() {
 }
 
 /// 合法推导式：字面量、嵌套括号、左结合加减与乘除优先级链式求值都对得上手算。
-#[test]
 fn formulas_evaluate_priority_chains_and_parenthesized_groups() {
     let cases: &[(&str, f64)] = &[
         ("0", 0.0),
@@ -332,7 +318,6 @@ fn formulas_evaluate_priority_chains_and_parenthesized_groups() {
 
 /// 拒绝用例表驱动：除零、括号不闭合/不成对、运算符续接、连续运算符、非法字符与悬空括号，
 /// 每条都必须带非空说明消息；非法字面量也按位置报出。
-#[test]
 fn formulas_reject_each_degenerate_shape_with_a_message() {
     let cases: &[&str] = &[
         "1/0", "(1+2", "1+2)", "1+2)*3", "8*", "1+2-", "*3", "**2", "1++2", "1--2", "1*/2", "2 3",
@@ -349,7 +334,6 @@ fn formulas_reject_each_degenerate_shape_with_a_message() {
 }
 
 /// 饱和字面量：极大指数与相邻大数乘积按 f64 折叠（可溢出成 inf），既不 panic 也不静默截断。
-#[test]
 fn formulas_handle_saturated_large_literals_without_panic() {
     let cases: &[&str] = &[
         "1e308",
@@ -369,7 +353,6 @@ fn formulas_handle_saturated_large_literals_without_panic() {
 }
 
 /// 区间解析四种写法与退化边界：空串、非数字、上界越上、空白两侧、不限区间的往返。
-#[test]
 fn span_parse_covers_boundary_and_degenerate_forms() {
     let cases: &[(&str, Result<Span, ()>)] = &[
         ("16", Ok(Span::exact(16))),
@@ -398,7 +381,6 @@ fn span_parse_covers_boundary_and_degenerate_forms() {
 }
 
 /// 闭集解析：空串、大小写漂移、截断词与重复成员都不命中；全量成员名字往返一致。
-#[test]
 fn closed_set_parse_rejects_boundary_and_foreign_names() {
     let foreign: &[&str] = &["", " ", "MMA", "dot ", "tma_bulk", "f32 ", "FAST ", "L4"];
     for name in foreign {
@@ -418,7 +400,6 @@ fn closed_set_parse_rejects_boundary_and_foreign_names() {
     }
 }
 
-#[test]
 fn a_witness_is_file_plus_function_plus_expectation() {
     let profile = Profile::parse(cpu()).expect("可解析");
     let witness = profile
@@ -431,7 +412,6 @@ fn a_witness_is_file_plus_function_plus_expectation() {
     // 视图见证固定为 `(文件, 入口, 期望)` 三元组；旧动态表“只有路径”的状态已由类型系统排除。
 }
 
-#[test]
 fn an_empty_expectation_is_rejected() {
     let mut profile = Profile::parse(cpu()).expect("可解析");
     profile.provides[0]
@@ -449,7 +429,6 @@ fn an_empty_expectation_is_rejected() {
     );
 }
 
-#[test]
 fn the_witness_function_must_exist_in_the_file() {
     let dir = temp_dir("witness");
     let vendor = dir.join("cpu");
@@ -471,7 +450,6 @@ fn the_witness_function_must_exist_in_the_file() {
 }
 
 /// 见证文件不在是 `missing`，不是"档案写错"：两者在脚本里该分开处理。
-#[test]
 fn a_missing_witness_file_is_missing() {
     let dir = temp_dir("witness-missing");
     let profile = Profile::parse(cpu()).expect("可解析");
@@ -484,7 +462,6 @@ fn a_missing_witness_file_is_missing() {
 
 /// 见证可以先落成数据：等级还是 L0/L1 时，声明过的文件与函数名同样要校验，
 /// 否则命名写错会一直潜伏到升 L2 才暴露。
-#[test]
 fn a_declared_witness_is_validated_below_l2() {
     let dir = temp_dir("witness-l1");
     let vendor = dir.join("nvidia");
@@ -522,7 +499,6 @@ fn a_declared_witness_is_validated_below_l2() {
 ///
 /// 见证证明的是"这条签名写的是什么算法"，共用入口会让"每条 provides 都有见证"退化成
 /// "每条都指向同一份证据"——`mmad` 与 `fma4` 正是两种算法。
-#[test]
 fn a_witness_may_serve_only_one_signature() {
     let mut profile = Profile::parse(ascend()).expect("可解析");
     let quant = profile
@@ -543,7 +519,6 @@ fn a_witness_may_serve_only_one_signature() {
     );
 }
 
-#[test]
 fn fingerprint_rules_match_versions_and_sets() {
     assert!(MatchRule::parse("10.0..10.3").matches("10.2"));
     assert!(!MatchRule::parse("10.0..10.3").matches("9.0"));
@@ -556,7 +531,6 @@ fn fingerprint_rules_match_versions_and_sets() {
     assert!(!MatchRule::parse("x86_64|aarch64").matches("riscv64"));
 }
 
-#[test]
 fn profile_matches_detected_fingerprint() {
     let profile = Profile::parse(cpu()).expect("可解析");
     let arch = std::env::consts::ARCH;
@@ -567,7 +541,6 @@ fn profile_matches_detected_fingerprint() {
     assert!(!profile.matches(&Detected::new().with("arch", "sparc")));
 }
 
-#[test]
 fn only_verified_provides_satisfy_needs() {
     let profile = Profile::parse(cpu()).expect("可解析");
     let need = Need::of(Prim::Atomic);
@@ -580,7 +553,6 @@ fn only_verified_provides_satisfy_needs() {
 ///
 /// `[simt]` 此前完全不进能力比对，warp 宽度契约因此没有校验入口；这条把它变成装载期
 /// 判据，而不是档案作者的自觉。
-#[test]
 fn a_single_lane_device_may_not_declare_a_lane_exchange() {
     let mut profile = Profile::parse(cpu()).expect("可解析");
     assert_eq!(profile.simt.group, 1, "前提：CPU 是单 lane");
@@ -598,6 +570,7 @@ fn a_single_lane_device_may_not_declare_a_lane_exchange() {
         "{errors:?}"
     );
 }
+}
 
 /// 内置昇腾档案：执行单元与"哪一层只有谁能访问"全在数据里。
 fn ascend() -> &'static crate::prof::ProfileView {
@@ -614,7 +587,7 @@ fn exec(values: &[&str]) -> Attr {
     Attr::new(AttrKey::Exec, values.iter().copied())
 }
 
-#[test]
+testkit::test_cases! {
 fn parses_builtin_ascend_profile_with_units() {
     let profile = ascend_profile();
     assert_eq!(profile.meta.vendor, "ascend");
@@ -643,7 +616,6 @@ fn parses_builtin_ascend_profile_with_units() {
     assert_eq!(exec.values(), ["cube".to_string()]);
 }
 
-#[test]
 fn exec_must_name_a_declared_unit() {
     let mut profile = ascend_profile();
     let dot = profile
@@ -663,7 +635,6 @@ fn exec_must_name_a_declared_unit() {
     );
 }
 
-#[test]
 fn a_unit_cannot_reach_a_space_it_does_not_have() {
     let mut profile = ascend_profile();
     let dot = profile
@@ -683,7 +654,6 @@ fn a_unit_cannot_reach_a_space_it_does_not_have() {
     );
 }
 
-#[test]
 fn one_primitive_can_have_several_signatures_but_not_the_same_impl_twice() {
     let mut profile = Profile::parse(cpu()).expect("可解析");
     let mut extra = profile.provides[0].clone();
@@ -706,7 +676,6 @@ fn one_primitive_can_have_several_signatures_but_not_the_same_impl_twice() {
     );
 }
 
-#[test]
 fn a_need_can_demand_an_execution_unit() {
     let profile = ascend_profile();
     let dots: Vec<&Provide> = profile.providers(Prim::Dot).collect();
@@ -725,7 +694,6 @@ fn a_need_can_demand_an_execution_unit() {
 /// 一条 dequant 签名覆盖 i2 / i4 两种打包宽度：片段里位宽由 `$width` / `$cpb` / `$zero` 派生，
 /// 所以不需要第二条签名。签名缺 i2 时 i2 系列 op 是"dt 缺 i2"的结构性缺席，永远协商不上——
 /// 那不是证据等级问题，改 grade 也修不好。
-#[test]
 fn a_dequant_signature_covers_both_packed_widths() {
     let profile = ascend_profile();
     let dequant = profile
@@ -743,7 +711,6 @@ fn a_dequant_signature_covers_both_packed_widths() {
 }
 
 /// 同分并列：选中靠后那份（`max_by_key` 语义），报错点名靠前那份——两者分开记，一趟扫完就够。
-#[test]
 fn select_names_the_first_rival_of_an_equally_specific_pair() {
     let mut lead = Profile::parse(cpu()).expect("档案");
     lead.meta.vendor = "lead".to_string();
@@ -760,7 +727,6 @@ fn select_names_the_first_rival_of_an_equally_specific_pair() {
 }
 
 /// 类型级向量同时约束元素档与车道数，并保留零拷贝对拍通道。
-#[test]
 fn typed_vector_values_are_checked_and_remain_slice_compatible() {
     let vector = crate::model::Vector::<f32, 4>::new(vec![1.0, -2.0, 3.5, 4.0])
         .expect("四个标量可组成四车道向量");
@@ -774,4 +740,5 @@ fn typed_vector_values_are_checked_and_remain_slice_compatible() {
 
     assert!(crate::model::Vector::<f32, 0>::new(Vec::new()).is_err());
     assert!(crate::model::Vector::<f32, 4>::new(vec![1.0, 2.0]).is_err());
+}
 }

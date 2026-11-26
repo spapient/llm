@@ -1,7 +1,7 @@
 use super::*;
 
+testkit::test_cases! {
 /// 三条打包/逐元素配置自洽：每字节码数 = 8 / 位宽；打包表长度等于码域；零点落在码域内。
-#[test]
 fn rows_are_self_consistent() {
     for row in [I2, I4, I8] {
         assert_eq!(row.cpb, 8 / row.bits.bits() as usize, "cpb 必须由位宽推出");
@@ -21,7 +21,6 @@ fn rows_are_self_consistent() {
 }
 
 /// 对称表逐位回退：`table[code] = code − zero`，与骨架解包口径一致。
-#[test]
 fn packed_tables_are_symmetric() {
     for row in [I2, I4] {
         for (code, &value) in row.table.iter().enumerate() {
@@ -32,4 +31,5 @@ fn packed_tables_are_symmetric() {
             );
         }
     }
+}
 }

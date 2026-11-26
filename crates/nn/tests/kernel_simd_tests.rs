@@ -56,7 +56,7 @@ fn oracle(m: usize, cpb: usize, w_row: &[u8], s_row: &[f32], x: &[f32]) -> f32 {
     super::super::packed::dot_row(w_row, x, s_row, ctx.group / cpb, ctx.group, cpb, table(cpb))
 }
 
-#[test]
+testkit::test_cases! {
 fn the_affine_zero_is_the_table_zero() {
     assert_eq!(affine_zero(I4.table, 16), Some(8.0));
     assert_eq!(affine_zero(I2.table, 4), Some(2.0));
@@ -67,7 +67,6 @@ fn the_affine_zero_is_the_table_zero() {
 }
 
 /// 车道数只取两档，且必须整除一组；凑不满一档的形状由 [`admit`] 在进内核之前挡下。
-#[test]
 fn the_lane_count_only_takes_the_two_wide_tiers() {
     assert_eq!(
         lanes_of(GROUP / 2),
@@ -94,6 +93,7 @@ fn the_lane_count_only_takes_the_two_wide_tiers() {
     // 表不落在仿射关系上：查表换不成算式的形状，回退。
     assert!(admit(2, N, ctx(M, 2), &[0.0, 2.0, 4.0, 9.0]).is_none());
 }
+}
 
 /// 跑一遍字节内核，把每行与标量叶 [`oracle`] 逐行比对；`agree` 决定该行的容差口径。
 ///
@@ -117,7 +117,7 @@ fn compare_rows(values: fn(usize) -> Vec<f32>, agree: impl Fn(f32, f32, usize, u
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn exactly_representable_values_are_bit_identical() {
     // 整数码 × 整数 x × 2 的幂标度：每一步都不产生舍入，于是归约顺序无关，两条通道逐位相同。
     compare_rows(whole, |got, want, cpb, j| {
@@ -125,7 +125,6 @@ fn exactly_representable_values_are_bit_identical() {
     });
 }
 
-#[test]
 fn inexact_values_agree_within_rounding() {
     // 非精确取值：只有舍入关联不同，差值必须落在 f32 舍入的量级里。
     compare_rows(fractional, |got, want, cpb, j| {
@@ -137,7 +136,6 @@ fn inexact_values_agree_within_rounding() {
     });
 }
 
-#[test]
 fn a_row_batch_equals_row_by_row_calls() {
     let cpb = 2;
     let ctx = ctx(M, cpb);
@@ -162,6 +160,7 @@ fn a_row_batch_equals_row_by_row_calls() {
         );
     }
 }
+}
 
 /// 逐元素通道的一种取法与逐个展开比对：容差取 f32 舍入量级（累加顺序不同，不能逐位比）。
 fn agree_elementwise<T: Load>(w: &[T], x: &[f32], one: impl Fn(T) -> f32) {
@@ -171,8 +170,8 @@ fn agree_elementwise<T: Load>(w: &[T], x: &[f32], one: impl Fn(T) -> f32) {
     assert!((got - want).abs() <= slack, "{got} vs {want}");
 }
 
+testkit::test_cases! {
 /// 稠密 `f32` 的逐元素通道：累加链轮转、整段与零头都得走到。
-#[test]
 fn the_dense_channel_covers_every_chain_and_the_tail() {
     // 一段 = `CHAINS · WIDE` 个元素；两边的零头与整段都要出现。
     for m in [
@@ -192,7 +191,6 @@ fn the_dense_channel_covers_every_chain_and_the_tail() {
 }
 
 /// 对称 `int8` 的逐元素通道：`> 127` 的字节必须按二补数落到负值，而不是当无符号数乘。
-#[test]
 fn the_int8_channel_sign_extends_the_byte_pattern() {
     for m in [1, WIDE - 1, WIDE, WIDE + 1, CHAINS * WIDE + 5, 263] {
         // `% 251` 跨过 127，正值与负值交替出现；短样本凑不齐两侧，按整段起点判定。
@@ -206,4 +204,5 @@ fn the_int8_channel_sign_extends_the_byte_pattern() {
         }
         agree_elementwise(&w, &fractional(m), |b| (b as i8) as f32);
     }
+}
 }

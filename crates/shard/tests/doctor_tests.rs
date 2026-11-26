@@ -14,7 +14,7 @@ fn cache_dirs(name: &str) -> Dirs {
     Dirs::under(root)
 }
 
-#[test]
+testkit::test_cases! {
 fn doctor_reports_the_full_chain() {
     let report = doctor(&catalogue(), &dirs(), "gemv_i4", "cpu").expect("doctor 应成功");
     assert_eq!(report.path.as_ref().expect("有路径").variant, "pipe2");
@@ -27,7 +27,6 @@ fn doctor_reports_the_full_chain() {
     assert!(hex.chars().all(|digit| digit.is_ascii_hexdigit()));
 }
 
-#[test]
 fn doctor_reports_each_variant_as_data() {
     let report = doctor(&catalogue(), &dirs(), "gemv_i4", "cpu").expect("doctor 应成功");
     assert!(report.no_path.is_none(), "{report:?}");
@@ -40,7 +39,6 @@ fn doctor_reports_each_variant_as_data() {
     );
 }
 
-#[test]
 fn doctor_explains_why_a_gpu_is_rejected() {
     // `ascend` 的 P0 原语仍未验证：作为证据不足样本。
     let report = doctor(&catalogue(), &dirs(), "gemv_i4", "ascend").expect("仍应返回报告");
@@ -50,7 +48,6 @@ fn doctor_explains_why_a_gpu_is_rejected() {
 }
 
 /// 协商用的是这次执行到的证据：条数与依据都要能对上档案。
-#[test]
 fn doctor_reports_the_evidence_it_ran() {
     if crate::toolchain::skip_without_host_compiler() {
         return;
@@ -78,7 +75,6 @@ fn doctor_reports_the_evidence_it_ran() {
 
 /// 本机执行不了的设备：依据必须写成"档案自述"，不能假装执行过。
 /// 用 ascend（两台机都缺席）而非 nvidia：后者在 CUDA 真机上设备执行，依据是 Executed。
-#[test]
 fn a_device_that_cannot_run_here_is_negotiated_on_declarations() {
     let report = doctor(&catalogue(), &dirs(), "gemv_i4", "ascend").expect("仍应返回报告");
     assert_eq!(report.evidence.basis, Basis::Declared);
@@ -99,7 +95,6 @@ fn a_device_that_cannot_run_here_is_negotiated_on_declarations() {
 }
 
 /// 见证对不上时能力就不成立：同一份档案只把一处期望值写错，协商也必须全线不可行。
-#[test]
 fn a_witness_that_does_not_hold_removes_the_capability() {
     if crate::toolchain::skip_without_host_compiler() {
         return;
@@ -126,7 +121,6 @@ fn a_witness_that_does_not_hold_removes_the_capability() {
     assert!(error.to_string().contains("没有这次执行的见证"), "{error}");
 }
 
-#[test]
 fn storage_reports_the_archive_capacity_next_to_the_declared_traffic() {
     let report = doctor(&catalogue(), &dirs(), "gemv_i4", "cpu").expect("doctor 应成功");
     assert_eq!(report.storage.len(), 3, "三层都要报：{report:?}");
@@ -160,7 +154,6 @@ fn storage_reports_the_archive_capacity_next_to_the_declared_traffic() {
     assert_eq!(gm.capacity, None, "GM 不受限额，不编一个容量");
 }
 
-#[test]
 fn the_planned_shape_comes_from_the_operator_model() {
     let model = crate::pipeline::model_for("gemv_i4").expect("有模型");
     let report = doctor(&catalogue(), &dirs(), "gemv_i4", "cpu").expect("doctor 应成功");
@@ -171,7 +164,6 @@ fn the_planned_shape_comes_from_the_operator_model() {
     );
 }
 
-#[test]
 fn why_separates_half_written_from_never_written() {
     let dirs = cache_dirs("cache-why-partial");
     let report = doctor(&catalogue(), &dirs, "gemv_i4", "cpu").expect("doctor 应成功");
@@ -195,7 +187,6 @@ fn why_separates_half_written_from_never_written() {
     let _ = std::fs::remove_dir_all(dirs.cache());
 }
 
-#[test]
 fn why_names_the_field_that_invalidated_the_cache() {
     let dirs = cache_dirs("cache-why");
     let report = doctor(&catalogue(), &dirs, "gemv_i4", "cpu").expect("doctor 应成功");
@@ -227,7 +218,6 @@ fn why_names_the_field_that_invalidated_the_cache() {
 
 /// 这条用例的前提是"doctor 已经把内核源与见证程序都落了盘"，因此它跟着 `doctor` 住在执行半边：
 /// 判据本身是 `cutile::cache` 的 GC，但只有跑过一条流水线才有可回收的东西。
-#[test]
 fn cache_gc_reclaims_through_the_cache_directory() {
     let dirs =
         Dirs::under(std::env::temp_dir().join(format!("cutile-gc-cache-{}", std::process::id())));
@@ -251,10 +241,11 @@ fn cache_gc_reclaims_through_the_cache_directory() {
     assert_eq!(after.after, 0, "{after:?}");
     let _ = std::fs::remove_dir_all(dirs.cache());
 }
+}
 
 // ---- ledger_tests.rs ----
 
-#[test]
+testkit::test_cases! {
 fn every_profile_covers_the_whole_prim_closed_set() {
     let catalogue = catalogue();
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
@@ -269,7 +260,6 @@ fn every_profile_covers_the_whole_prim_closed_set() {
     }
 }
 
-#[test]
 fn verified_cells_only_come_from_executed_basis() {
     let catalogue = catalogue();
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
@@ -282,7 +272,6 @@ fn verified_cells_only_come_from_executed_basis() {
     }
 }
 
-#[test]
 fn self_check_cells_only_come_from_declared_basis() {
     let catalogue = catalogue();
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
@@ -295,7 +284,6 @@ fn self_check_cells_only_come_from_declared_basis() {
     }
 }
 
-#[test]
 fn declared_provisions_each_get_a_cell_and_unprovided_are_marked() {
     let catalogue = catalogue();
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
@@ -333,7 +321,6 @@ fn declared_provisions_each_get_a_cell_and_unprovided_are_marked() {
 
 /// K14：设备执行一个都拿不到的档案，每一格要么有见证、要么自报"本机起不了前端"。
 /// 口径：`Declared` 格只允许出现在整行零见证的档案上；行里有见证而某原语没见证 = 真漏洞。
-#[test]
 fn no_provided_cell_falls_back_to_declaration_while_the_row_has_witnesses() {
     let catalogue = catalogue();
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
@@ -353,4 +340,5 @@ fn no_provided_cell_falls_back_to_declaration_while_the_row_has_witnesses() {
             );
         }
     }
+}
 }

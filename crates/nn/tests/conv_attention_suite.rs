@@ -1,5 +1,12 @@
 use super::*;
 
+fn attention_inputs(sample: &Sample) -> [tensor::View<'_>; 3] {
+    ["q", "k", "v"].map(|name| {
+        tensor::View::matrix(8, 8, sample.f32(name).unwrap())
+            .unwrap_or_else(|_| panic!("{name} 二维"))
+    })
+}
+
 #[test]
 fn flash_and_plain_attention_agree_and_rows_are_distributions() {
     let sample = sample(8, 8);
@@ -13,23 +20,13 @@ fn flash_and_plain_attention_agree_and_rows_are_distributions() {
     assert!(testkit::all_finite(&plain));
 
     let mut out = vec![0.0f32; 64];
-    forward(
-        tensor::View::matrix(8, 8, sample.f32("q").unwrap()).expect("q 二维"),
-        tensor::View::matrix(8, 8, sample.f32("k").unwrap()).expect("k 二维"),
-        tensor::View::matrix(8, 8, sample.f32("v").unwrap()).expect("v 二维"),
-        &mut out,
-    )
-    .expect("朴素内核");
+    let [q, k, v] = attention_inputs(&sample);
+    forward(q, k, v, &mut out).expect("朴素内核");
     assert_eq!(out, plain);
 
     let mut flash_out = vec![0.0f32; 64];
-    flash_forward(
-        tensor::View::matrix(8, 8, sample.f32("q").unwrap()).expect("q 二维"),
-        tensor::View::matrix(8, 8, sample.f32("k").unwrap()).expect("k 二维"),
-        tensor::View::matrix(8, 8, sample.f32("v").unwrap()).expect("v 二维"),
-        &mut flash_out,
-    )
-    .expect("flash 内核");
+    let [q, k, v] = attention_inputs(&sample);
+    flash_forward(q, k, v, &mut flash_out).expect("flash 内核");
     assert!(testkit::approx_eq(&flash_out, &flash, 1e-5));
 }
 
@@ -38,7 +35,7 @@ fn det_rows(rows: usize, d: usize, base: f32, step: f32) -> Vec<f32> {
     (0..rows * d).map(|idx| base + idx as f32 * step).collect()
 }
 
-#[test]
+testkit::test_cases! {
 fn decode_flash_and_plain_agree_with_single_query_row() {
     let (q_rows, hist, d) = (1, 5, 4);
     let (q, k, v) = decode_qkv(q_rows, hist, d);
@@ -51,7 +48,6 @@ fn decode_flash_and_plain_agree_with_single_query_row() {
     );
 }
 
-#[test]
 fn decode_supports_multiple_query_rows_against_history() {
     let (q_rows, hist, d) = (2, 4, 4);
     let (q, k, v) = decode_qkv(q_rows, hist, d);
@@ -60,7 +56,6 @@ fn decode_supports_multiple_query_rows_against_history() {
     assert_plain_flash(&plain, &flash);
 }
 
-#[test]
 fn decode_rejects_buf_length_mismatch() {
     let (q_rows, hist, d) = (1, 5, 4);
     let (q, k, v) = decode_qkv(q_rows, hist, d);
@@ -89,7 +84,6 @@ fn decode_rejects_buf_length_mismatch() {
     );
 }
 
-#[test]
 fn decode_rejects_zero_head_width_or_empty_rows() {
     let empty: &[f32] = &[];
     let mut out = vec![];
@@ -136,7 +130,6 @@ fn decode_rejects_zero_head_width_or_empty_rows() {
     );
 }
 
-#[test]
 fn attention_rejects_zero_head_width() {
     // d=0：三个输入与输出都是空缓冲，长度校验放行后由头宽守卫拦下，避免 √d 除零成 NaN。
     let empty: &[f32] = &[];
@@ -164,6 +157,7 @@ fn attention_rejects_zero_head_width() {
         flash_reference(&sample(8, 0)).is_err(),
         "flash 参考同样守卫头宽"
     );
+}
 }
 
 /// 同一条 q/k/v 各跑一遍朴素与 flash decode，返回两份输出供上层对拍。
@@ -230,7 +224,7 @@ fn constant_v(spans: impl Iterator<Item = usize>) -> Vec<f32> {
         .collect()
 }
 
-#[test]
+testkit::test_cases! {
 fn multi_head_decode_keeps_each_head_independent_and_plain_matches_flash() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
     let q = det_rows(heads * q_rows, d, -0.5, 0.13);
@@ -255,7 +249,6 @@ fn multi_head_decode_keeps_each_head_independent_and_plain_matches_flash() {
     }
 }
 
-#[test]
 fn one_head_entry_matches_the_single_head_kernel() {
     let (q_rows, hist, d) = (2, 4, 4);
     let (q, k, v) = decode_qkv(q_rows, hist, d);
@@ -273,7 +266,6 @@ fn one_head_entry_matches_the_single_head_kernel() {
     assert_eq!(single, multi, "heads=1 必须与单头内核逐元素等价");
 }
 
-#[test]
 fn multi_head_rejects_non_multiple_buf_length() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
     let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
@@ -285,7 +277,6 @@ fn multi_head_rejects_non_multiple_buf_length() {
     assert!(decode_forward_heads(&q[..q.len() - 1], &k, &v, &mut ragged, q_rows, hist, d).is_err());
 }
 
-#[test]
 fn batch_decode_keeps_each_sequence_independent_and_plain_matches_flash() {
     let (q_rows, hist, heads, d, batch) = (1, 4, 2, 3, 2);
     let q_seq = heads * q_rows * d;
@@ -310,6 +301,7 @@ fn batch_decode_keeps_each_sequence_independent_and_plain_matches_flash() {
     assert_plain_flash(&plain, &flash);
     assert_constant_v(&plain, q_seq, batch);
 }
+}
 
 /// 单段经批量入口必须与多头入口逐元素等价；`batch_entry` 给出这一侧的跑法。
 fn single_batch_matches_multi_head(
@@ -324,14 +316,13 @@ fn single_batch_matches_multi_head(
     assert_eq!(multi, batch, "batch=1 必须与多头入口逐元素等价");
 }
 
-#[test]
+testkit::test_cases! {
 fn batch_one_entry_matches_the_multi_head_kernel() {
     single_batch_matches_multi_head((2, 4, 2, 3), |(q_rows, hist, heads, d), q, k, v, out| {
         decode_forward_batch(q, k, v, out, q_rows, hist, d, heads, 1).expect("单段经批量入口");
     });
 }
 
-#[test]
 fn batch_rejects_non_multiple_length_and_zero_batch() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
     let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
@@ -358,7 +349,6 @@ fn batch_rejects_non_multiple_length_and_zero_batch() {
     );
 }
 
-#[test]
 fn batch_var_keeps_mixed_history_lengths_independent_and_plain_matches_flash() {
     let (q_rows, heads, d) = (1, 2, 3);
     let hist = [3usize, 5];
@@ -385,14 +375,12 @@ fn batch_var_keeps_mixed_history_lengths_independent_and_plain_matches_flash() {
     assert_constant_v(&plain, q_seq, batch);
 }
 
-#[test]
 fn batch_var_one_entry_matches_the_multi_head_kernel() {
     single_batch_matches_multi_head((1, 4, 2, 3), |(q_rows, hist, heads, d), q, k, v, out| {
         decode_forward_batch_var(q, k, v, out, q_rows, &[hist], d, heads).expect("变长入口单段");
     });
 }
 
-#[test]
 fn batch_var_rejects_mismatched_kv_length_empty_or_zero_history() {
     let (q_rows, heads, d) = (1, 2, 3);
     let hist = [3usize, 5];
@@ -413,6 +401,7 @@ fn batch_var_rejects_mismatched_kv_length_empty_or_zero_history() {
     // 某段历史为 0：段内行数守卫拦下。
     assert!(decode_forward_batch_var(&q, &k, &v, &mut out, q_rows, &[3, 0], d, heads).is_err());
 }
+}
 
 mod latent {
 // 潜空间注意力的语义锚与「内核 ↔ 参考」对拍。
@@ -427,7 +416,7 @@ fn bufs(sample: &crate::model::Sample) -> Vec<&[f32]> {
         .collect()
 }
 
-#[test]
+testkit::test_cases! {
 fn zero_scores_degrade_to_uniform_average_of_the_compressed_values() {
     let s = sample(2, 8);
     let q = vec![0.0f32; 2 * 8];
@@ -450,7 +439,6 @@ fn zero_scores_degrade_to_uniform_average_of_the_compressed_values() {
     }
 }
 
-#[test]
 fn a_single_key_value_row_passes_through_unchanged() {
     let q = vec![0.3f32, -0.7, 0.2, 0.1, 0.5, -0.5, 0.9, -0.2];
     let k = vec![0.4f32, 0.1, -0.3, 0.6, 0.2, -0.8, 0.1, 0.3];
@@ -467,7 +455,6 @@ fn a_single_key_value_row_passes_through_unchanged() {
     assert_eq!(y, v);
 }
 
-#[test]
 fn the_rope_tail_moves_the_scores() {
     let s = sample(2, 8);
     let bufs = bufs(&s);
@@ -501,7 +488,6 @@ fn the_rope_tail_moves_the_scores() {
     );
 }
 
-#[test]
 fn the_kernel_agrees_with_the_reference_on_the_declared_sample() {
     let s = sample(3, 8);
     let got = {
@@ -525,7 +511,6 @@ fn the_kernel_agrees_with_the_reference_on_the_declared_sample() {
     }
 }
 
-#[test]
 fn the_output_width_may_be_narrower_than_the_read_width() {
     // R=3、T=3、W=10、dc=3：输出比读入窄，几何全部由长度给出，没有标量可依赖。
     let (r, t, w, dc) = (3usize, 3usize, 10usize, 3usize);
@@ -554,6 +539,7 @@ fn the_output_width_may_be_narrower_than_the_read_width() {
             assert!((y[row * dc + c] - want).abs() < 1e-5, "行 {row} 列 {c}");
         }
     }
+}
 }
 
 }

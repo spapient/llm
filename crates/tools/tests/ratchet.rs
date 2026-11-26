@@ -52,8 +52,8 @@ fn debt_gate(ccn: usize, measured: usize) -> (Gate, Over) {
     (gate, over)
 }
 
+testkit::test_cases! {
 /// 项目配置：阈值来自构建期强类型视图，存量债务只允许挂在入口编排层。
-#[test]
 fn the_project_config_lists_only_root_entry_legacy_debt() {
     let gate = Gate::load().expect("项目配置合法");
     let limits =
@@ -71,7 +71,6 @@ fn the_project_config_lists_only_root_entry_legacy_debt() {
     }
 }
 
-#[test]
 fn a_test_boulder_over_the_limit_must_fail() {
     let gate = Gate::load().expect("阈值配置加载");
     let limit = gate.test_limit();
@@ -93,7 +92,6 @@ fn a_test_boulder_over_the_limit_must_fail() {
     std::fs::remove_dir_all(&dir).expect("清理临时目录");
 }
 
-#[test]
 fn every_threshold_must_be_positive() {
     for key in GATE_KEYS {
         let mut view = SOUND;
@@ -113,7 +111,6 @@ fn every_threshold_must_be_positive() {
     }
 }
 
-#[test]
 fn an_unknown_gate_key_is_an_error_not_noise() {
     assert_eq!(
         llm_tools::gate::reject_unknown_gate_key("simd_nloc")
@@ -124,7 +121,6 @@ fn an_unknown_gate_key_is_an_error_not_noise() {
     );
 }
 
-#[test]
 fn a_debt_row_without_a_metric_is_rejected() {
     assert_eq!(
         with_debt(None, None).unwrap_err().message(),
@@ -132,7 +128,6 @@ fn a_debt_row_without_a_metric_is_rejected() {
     );
 }
 
-#[test]
 fn a_debt_row_registers_only_the_metrics_it_names() {
     let (gate, over) = debt_gate(9, 9);
     assert!(gate.reject_reason(&over).is_none(), "登记范围内应通过");
@@ -148,7 +143,6 @@ fn a_debt_row_registers_only_the_metrics_it_names() {
 }
 
 /// 登记值高于实测即失败：基线是快照，不是预算。
-#[test]
 fn a_register_above_the_measurement_must_be_lowered() {
     let (gate, over) = debt_gate(47, 6);
     assert_eq!(
@@ -159,7 +153,6 @@ fn a_register_above_the_measurement_must_be_lowered() {
 }
 
 /// 同一身份登记 ccn 与 nloc：只观测到 ccn 仍超限时，nloc 必须结清。
-#[test]
 fn a_satisfied_metric_must_drop_even_when_the_identity_is_still_live() {
     let gate = with_debt(Some(9), Some(90)).expect("视图合法");
     let live = BTreeMap::from([(
@@ -179,7 +172,6 @@ fn a_satisfied_metric_must_drop_even_when_the_identity_is_still_live() {
 }
 
 /// 三种判定：恶化失败、登记范围内通过、全新身份失败。
-#[test]
 fn ratchet_blocks_new_and_worse_allows_within_budget() {
     let (gate, over) = debt_gate(9, 10);
     assert!(gate.reject_reason(&over).is_some(), "恶化必须失败");
@@ -195,4 +187,5 @@ fn ratchet_blocks_new_and_worse_allows_within_budget() {
         .is_some(),
         "全新身份直接失败"
     );
+}
 }

@@ -48,8 +48,8 @@ fn emitter() -> Emitter<f32> {
     Emitter::new(rule(2.0), encoder(8), decoder(8)).expect("两侧宽度对")
 }
 
+testkit::test_cases! {
 /// 预算用尽就停：产出正好 `ceiling` 个字节，并记 `Ceiling`。
-#[test]
 fn the_loop_stops_at_the_ceiling() {
     let emission = emitter().run(9, None).expect("状态自洽");
     assert_eq!(emission.len(), 9);
@@ -62,7 +62,6 @@ fn the_loop_stops_at_the_ceiling() {
 }
 
 /// 零预算不生成，也不读成"不限"。
-#[test]
 fn a_zero_budget_emits_nothing() {
     let emission = emitter().run(0, Some(0)).expect("状态自洽");
     assert!(emission.is_empty());
@@ -70,7 +69,6 @@ fn a_zero_budget_emits_nothing() {
 }
 
 /// 产出停止字节的那一步就停，停止字节含在产出里。
-#[test]
 fn a_stop_byte_halts_on_the_step_that_emits_it() {
     let first = emitter().run(1, None).expect("状态自洽").bytes()[0];
     let emission = emitter().run(16, Some(first)).expect("状态自洽");
@@ -79,7 +77,6 @@ fn a_stop_byte_halts_on_the_step_that_emits_it() {
 }
 
 /// 边生成边判与事后一次性切是同一份结果。
-#[test]
 fn the_incremental_split_equals_a_whole_sequence_split() {
     let mut emitter = emitter();
     emitter.run(24, None).expect("状态自洽");
@@ -93,7 +90,6 @@ fn the_incremental_split_equals_a_whole_sequence_split() {
 }
 
 /// 已收口的表示只算一次：它们与"整条切分一次编码"的那些行逐位相同，末段（未收口）不在里面。
-#[test]
 fn closed_patches_are_encoded_exactly_once() {
     let encoder = encoder(8);
     let mut emitter = Emitter::new(rule(0.5), encoder.clone(), decoder(8)).expect("宽度对");
@@ -110,7 +106,6 @@ fn closed_patches_are_encoded_exactly_once() {
 }
 
 /// 追加只往后长：再走几步，已经产出的字节与已经算出的表示都不变。
-#[test]
 fn a_prefix_is_never_rewritten() {
     let mut emitter = emitter();
     emitter.run(12, None).expect("状态自洽");
@@ -126,7 +121,6 @@ fn a_prefix_is_never_rewritten() {
 }
 
 /// 空历史的条件是全零：还没有记忆可加，也不拿零向量假装有一条。
-#[test]
 fn an_empty_history_conditions_on_zero() {
     let emitter = emitter();
     assert!(
@@ -141,7 +135,6 @@ fn an_empty_history_conditions_on_zero() {
 }
 
 /// 单 patch 时条件只剩本地上下文：没有收口的表示可加。
-#[test]
 fn a_single_open_patch_conditions_on_the_last_byte_only() {
     let encoder = encoder(8);
     let mut emitter = Emitter::new(rule(2.0), encoder.clone(), decoder(8)).expect("宽度对");
@@ -154,7 +147,6 @@ fn a_single_open_patch_conditions_on_the_last_byte_only() {
 }
 
 /// 收口之后就换成"上一条 patch 的表示 + 末字节向量"。
-#[test]
 fn a_closed_patch_joins_the_condition() {
     let encoder = encoder(8);
     let mut emitter = Emitter::new(rule(2.0), encoder.clone(), decoder(8)).expect("宽度对");
@@ -170,7 +162,6 @@ fn a_closed_patch_joins_the_condition() {
 }
 
 /// 预填充是替换而不是追加：换 prompt 不该留下上一次的切分与表示。
-#[test]
 fn seeding_replaces_the_history() {
     let mut emitter = emitter();
     emitter.seed(b"old", &[1.0, 1.0, 1.0]).expect("分数有限");
@@ -179,7 +170,6 @@ fn seeding_replaces_the_history() {
 }
 
 /// 阈值越紧切得越碎：同一段字节在低阈值下不会切得更少。
-#[test]
 fn a_tighter_threshold_cuts_at_least_as_often() {
     let mut loose = Emitter::new(rule(4.0), encoder(8), decoder(8)).expect("宽度对");
     let mut tight = Emitter::new(rule(0.2), encoder(8), decoder(8)).expect("宽度对");
@@ -200,7 +190,6 @@ fn a_tighter_threshold_cuts_at_least_as_often() {
 }
 
 /// 分数就是自信息：与字节一一对应、非负、且不超过 `ln BYTES`（贪心取的是最大通道）。
-#[test]
 fn the_scores_are_the_self_information_of_the_picked_byte() {
     let mut emitter = emitter();
     let produced = emitter.run(10, None).expect("状态自洽").bytes().to_vec();
@@ -215,7 +204,6 @@ fn the_scores_are_the_self_information_of_the_picked_byte() {
 }
 
 /// 停止原因是闭集，短名稳定。
-#[test]
 fn the_halt_names_are_stable() {
     assert_eq!(
         [Halt::Ceiling.as_str(), Halt::Stop.as_str()],
@@ -224,14 +212,12 @@ fn the_halt_names_are_stable() {
 }
 
 /// 两侧宽度不等在装配时就拒：喂不进这个头。
-#[test]
 fn a_width_mismatch_is_refused_at_assembly() {
     let refused = Emitter::new(rule::<f32>(1.0), encoder(8), decoder(4)).expect_err("宽度不等");
     assert_eq!(refused.code(), Code::Invalid);
 }
 
 /// 预填充的长度或分数不合就拒，并且旧历史原样保留。
-#[test]
 fn a_bad_seed_is_refused_without_touching_the_history() {
     let mut emitter = emitter();
     emitter
@@ -256,7 +242,6 @@ fn a_bad_seed_is_refused_without_touching_the_history() {
 }
 
 /// 更宽的标量走同一个循环：`f64` 下遍数与覆盖范围与 `f32` 一致。
-#[test]
 fn a_wider_scalar_runs_the_same_loop() {
     let encoder = ByteEncoder::<f64>::new(table(23, 8), 7);
     let mut projection = vec![0.0_f64; BYTES * 8];
@@ -276,4 +261,5 @@ fn a_wider_scalar_runs_the_same_loop() {
         emitter.reprs().len() < emission.len() * 8,
         "含末段的行不该全收口"
     );
+}
 }

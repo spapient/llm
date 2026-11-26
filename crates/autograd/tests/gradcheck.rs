@@ -216,7 +216,7 @@ fn on_graph(tape: &Tape, target: Var, loss: Var) -> bool {
     false
 }
 
-#[test]
+testkit::test_cases! {
 fn random_graphs_match_central_differences() {
     let mut rng = Rng::new(0xC0FF_EE12);
     for round in 0..200 {
@@ -225,7 +225,6 @@ fn random_graphs_match_central_differences() {
     }
 }
 
-#[test]
 fn a_shared_input_is_accumulated_once_per_edge() {
     // loss = (x * x) + (x + x)：d/dx = 2x + 2 = 6（x = 2）。
     let mut tape = Tape::new();
@@ -241,7 +240,6 @@ fn a_shared_input_is_accumulated_once_per_edge() {
     assert_eq!(analytic[x.id() as usize], 6.0);
 }
 
-#[test]
 fn a_detached_branch_contributes_nothing() {
     let mut tape = Tape::new();
     let x = tape.parameter();
@@ -256,6 +254,7 @@ fn a_detached_branch_contributes_nothing() {
     assert_eq!(schedule.len(), 1, "断开的分支排在计划之外");
     let analytic = gradients(&case, &schedule);
     assert_eq!(analytic[x.id() as usize], 1.0, "d/dx (x) = 1，平方项已断开");
+}
 }
 
 /// 随机前向：参数、常量与五个算子混在一起，loss 取最后一个要梯度的变量。

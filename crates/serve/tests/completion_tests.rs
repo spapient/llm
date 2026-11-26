@@ -59,7 +59,7 @@ fn tokens(payload: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-#[test]
+testkit::test_cases! {
 fn a_request_runs_to_its_limit_and_returns_its_tokens() {
     let endpoint = endpoint(Fixed(vec![0.0, 5.0, 3.0]), Greedy, 8);
     let response = endpoint
@@ -71,7 +71,6 @@ fn a_request_runs_to_its_limit_and_returns_its_tokens() {
 }
 
 /// 采到停止符时序列提前结束：页照样归还，载荷只含已经采到的 token。
-#[test]
 fn a_stop_token_ends_the_generation_early() {
     let endpoint = endpoint(Fixed(vec![0.0, 1.0]), StopAfter { remaining: 2 }, 8);
     let response = endpoint
@@ -82,7 +81,6 @@ fn a_stop_token_ends_the_generation_early() {
     assert_eq!(endpoint.in_use_pages(), Some(0));
 }
 
-#[test]
 fn a_malformed_request_never_reaches_the_scheduler() {
     let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 8);
     let response = endpoint
@@ -93,7 +91,6 @@ fn a_malformed_request_never_reaches_the_scheduler() {
 }
 
 /// 引擎侧的"参数不可能"也要报成 400：`max_new = 0` 是客户端能改的错。
-#[test]
 fn a_request_the_engine_cannot_serve_is_a_bad_request() {
     let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 8);
     let response = endpoint
@@ -106,7 +103,6 @@ fn a_request_the_engine_cannot_serve_is_a_bad_request() {
 /// 批满时新请求回 503 而不是 400：这是"现在挤不下"，等一条结束就会好。
 ///
 /// 与"页不够"同口径。把满批判成请求非法，会让客户端在容量压力下永久放弃本可成功的请求。
-#[test]
 fn a_full_batch_turns_new_requests_away_until_one_finishes() {
     let endpoint =
         endpoint(Fixed(vec![1.0]), Greedy, 8).with_budget(engine::ifb::Budget::new(1, 32));
@@ -131,7 +127,6 @@ fn a_full_batch_turns_new_requests_away_until_one_finishes() {
 }
 
 /// 最坏长度超过整个页池：重试多少次都一样，属于 400 而不是"稍后重试"。
-#[test]
 fn a_request_that_can_never_fit_is_refused_with_400() {
     let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 1);
     let response = endpoint
@@ -142,7 +137,6 @@ fn a_request_that_can_never_fit_is_refused_with_400() {
 }
 
 /// 模型自己失败是服务端故障：必须上抛成 `Err`，同时页仍然归还。
-#[test]
 fn a_model_failure_is_a_server_error_that_still_returns_pages() {
     let endpoint = endpoint(Broken, Greedy, 8);
     let error = endpoint
@@ -153,7 +147,6 @@ fn a_model_failure_is_a_server_error_that_still_returns_pages() {
 }
 
 /// 模型每一步都看得到"到目前为止的生成历史"：历史只存在序列里，端点不再维护平行列表。
-#[test]
 fn the_model_sees_the_generated_history() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -182,6 +175,7 @@ fn the_model_sees_the_generated_history() {
         [Vec::new(), vec![1], vec![1, 1]],
         "第一步看到空历史，之后每一步看到上一步的输出"
     );
+}
 }
 
 /// 一条按 id 失败的模型桩：命中 `fail` 上抛内部错误；批量前向在模型层整体失败，行内不归属。
@@ -275,8 +269,8 @@ fn admit_sequence(
     state.batch.admit(sequence).expect("准入");
 }
 
+testkit::test_cases! {
 /// 两条序列同批准入、同批步进：各自记账，跑完一起摘出，页全部归还。
-#[test]
 fn two_admitted_sequences_step_together_and_keep_their_own_history() {
     let endpoint = endpoint(Fixed(vec![0.0, 5.0]), Greedy, 8);
     let mut finished = Vec::new();
@@ -300,7 +294,6 @@ fn two_admitted_sequences_step_together_and_keep_their_own_history() {
 ///
 /// 这条用例守的是「页账与位置账是同一份」：只共享页不改已算位置，第二个请求会把同一段提示
 /// 重算一遍，而它写的正是它刚打算去读的页。
-#[test]
 fn a_second_request_with_the_same_prompt_skips_the_prefilled_prefix() {
     let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let endpoint = endpoint(
@@ -344,7 +337,6 @@ fn a_second_request_with_the_same_prompt_skips_the_prefilled_prefix() {
 }
 
 /// 页不足的序列留在批里、历史不变；其余序列照常推进，批不整体停摆。
-#[test]
 fn a_blocked_sequence_stays_in_the_batch_with_unchanged_history() {
     let endpoint = endpoint(Fixed(vec![0.0, 1.0]), Greedy, 2);
     let mut state = endpoint.lock().expect("锁");
@@ -363,7 +355,6 @@ fn a_blocked_sequence_stays_in_the_batch_with_unchanged_history() {
 
 /// 整批前向在模型层失败：失败发生在任何记账之前，批内序列页全部归还、序列摘出，不留已记账
 /// token；错误上抛成服务端故障。采样层的逐行隔离由 `a_failed_sampling_step...` 用例覆盖。
-#[test]
 fn a_batch_forward_fault_releases_all_pages_without_accounting_tokens() {
     let endpoint = endpoint(Split { fail: 1 }, Greedy, 8);
     {
@@ -383,7 +374,6 @@ fn a_batch_forward_fault_releases_all_pages_without_accounting_tokens() {
 }
 
 /// 采样失败与模型失败同一条隔离路径：先记账的序列不回滚，坏序列归还页摘出。
-#[test]
 fn a_failed_sampling_step_does_not_pollute_the_accounted_other() {
     let endpoint = endpoint(Fixed(vec![0.0, 1.0]), FlakySampler { calls: 0 }, 8);
     let mut state = endpoint.lock().expect("锁");
@@ -399,7 +389,6 @@ fn a_failed_sampling_step_does_not_pollute_the_accounted_other() {
 }
 
 /// 当前步 KV 行按序列号写进各自页行：两条同批互不覆盖。
-#[test]
 fn kv_rows_are_attributed_to_their_own_sequence() {
     let endpoint = endpoint(Recorder, Greedy, 8);
     let mut state = endpoint.lock().expect("锁");
@@ -418,7 +407,6 @@ fn kv_rows_are_attributed_to_their_own_sequence() {
 ///
 /// 这条守的是「块的末端只有一个算式」：打包按 `T_max` 判这一轮塞得下几行，推进也按同一个
 /// 配额收尾。两边各算一次，就会出现「打包说 8 行、推进算 12 行」——预算成了注释。
-#[test]
 fn a_tight_token_budget_prefills_only_the_rows_it_packed() {
     let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let endpoint = endpoint(
@@ -449,7 +437,6 @@ fn a_tight_token_budget_prefills_only_the_rows_it_packed() {
 }
 
 /// 批容量是两个上限的较小者：`T_max` 更小时按它挡人，而不是放进一条永远排不进一轮的序列。
-#[test]
 fn admission_is_capped_by_the_tighter_of_the_two_budgets() {
     let endpoint =
         endpoint(Fixed(vec![1.0]), Greedy, 8).with_budget(engine::ifb::Budget::new(4, 1));
@@ -476,7 +463,6 @@ fn admission_is_capped_by_the_tighter_of_the_two_budgets() {
 /// `pack` 对"这一轮塞不下"的回答是**截断**而不是报错——报错会退化成"这一轮很挤"和"配置坏了"
 /// 分不开。真配置矛盾的兜底另在 `State::round` 里（准入按 `min(B_max, T_max)` 挡人之后
 /// 它不该出现），生产走不到，因此这里只钉可达的那条。
-#[test]
 fn a_round_that_only_fits_one_row_advances_one_sequence() {
     let endpoint =
         endpoint(Fixed(vec![1.0]), Greedy, 8).with_budget(engine::ifb::Budget::new(4, 1));
@@ -499,7 +485,6 @@ fn a_round_that_only_fits_one_row_advances_one_sequence() {
 }
 
 /// 同一端点连续两次调用不能互相干扰：页账与序列都在每次调用结束时回到空。
-#[test]
 fn two_requests_in_a_row_leave_no_residue() {
     let endpoint = endpoint(Fixed(vec![0.0, 1.0]), Greedy, 8);
     for id in [1, 2] {
@@ -509,4 +494,5 @@ fn two_requests_in_a_row_leave_no_residue() {
         assert_eq!(tokens(response.envelope().payload()), [1, 1]);
     }
     assert_eq!(endpoint.in_use_pages(), Some(0));
+}
 }

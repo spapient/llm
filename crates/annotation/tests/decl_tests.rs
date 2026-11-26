@@ -22,8 +22,8 @@ fn reject<T: std::fmt::Debug>(result: Result<T, Error>, needle: &str) -> Error {
     error
 }
 
+testkit::test_cases! {
 /// 与真实词法相关的两件事：`0x10` 是一个字面量 token，`"a\nb"` 里的反斜杠是内容而不是转义。
-#[test]
 fn literals_are_content_not_syntax() {
     let hex = Token::Literal("0x10".to_string());
     let escaped = Token::Literal(r#""a\nb""#.to_string());
@@ -32,7 +32,6 @@ fn literals_are_content_not_syntax() {
 }
 
 /// 键顺序随意、尾随逗号允许、`in` 可选、轴序不被重排。
-#[test]
 fn a_layer_annotation_carries_name_shape_input_and_ops() {
     let text = r#"out = [2, 3], name = "q", ops = ["gemv_i4"],"#;
     let declaration = parse(&lex(text)).expect("合法");
@@ -53,7 +52,6 @@ fn a_layer_annotation_carries_name_shape_input_and_ops() {
 }
 
 /// 层注解的每一条错误：`needle` 是提示里必须出现的那一段。
-#[test]
 fn every_bad_layer_annotation_is_rejected_with_an_actionable_message() {
     let cases = [
         (
@@ -97,7 +95,6 @@ fn every_bad_layer_annotation_is_rejected_with_an_actionable_message() {
 }
 
 /// 报错指在写错的那一处：缺分隔符、未知键、方括号组各一例。
-#[test]
 fn an_error_points_at_the_token_the_user_wrote() {
     let error = reject(parse(&lex(r#"name = "a" out = [1]"#)), "`,`");
     assert_eq!(error.position, 3, "缺的那个逗号在下标 3 处");
@@ -112,7 +109,6 @@ fn an_error_points_at_the_token_the_user_wrote() {
 }
 
 /// 行为不是配置：两道类型注解只标具体类型，泛型与行为都在这里被拒；`#[model]` 只标别名。
-#[test]
 fn only_a_concrete_type_is_annotated() {
     assert_eq!(
         target_name(&lex("pub struct OutputHead;"), "spec").expect("struct"),
@@ -145,7 +141,6 @@ fn only_a_concrete_type_is_annotated() {
 }
 
 /// 语义表注解：四个键齐全、骨架缺省 `gemv`、`gemm` 只认三个注册名。
-#[test]
 fn a_model_declaration_carries_name_shape_dtype_and_skeleton() {
     let text = r#"name = "gemv_i4", shape = [4, 4096], dtype = "f32""#;
     let model = parse_model(&lex(text)).expect("合法注解");
@@ -160,7 +155,6 @@ fn a_model_declaration_carries_name_shape_dtype_and_skeleton() {
 }
 
 /// 语义表注解的每一条错误：缺键点名、形状恰好两个轴、闭集之外、重复键。
-#[test]
 fn every_bad_model_annotation_is_rejected_with_an_actionable_message() {
     let cases = [
         (r#"shape = [4, 4], dtype = "f32""#, "name"),
@@ -191,6 +185,7 @@ fn every_bad_model_annotation_is_rejected_with_an_actionable_message() {
         reject(parse_model(&lex(text)), needle);
     }
 }
+}
 
 /// 手工构造 token 的小工厂：词法边角（非字面量出现在值/键位、括号组出现在键位）夹具模拟不出来。
 fn ident(word: &str) -> Token {
@@ -205,8 +200,8 @@ fn punct(mark: char) -> Token {
     Token::Punct(mark)
 }
 
+testkit::test_cases! {
 /// 键位必须是标识符：字面量、标点、括号组各自被读成可读的 token，错误指在那一处。
-#[test]
 fn a_key_position_must_be_an_identifier() {
     let tokens = [literal("42"), punct('='), ident("x")];
     let error = reject(parse(&tokens), "期望键名");
@@ -220,7 +215,6 @@ fn a_key_position_must_be_an_identifier() {
 }
 
 /// 字符串与十进制整数只接受对应字面量；非字面量、缺引号、非数字、超 `usize` 各有一句判据。
-#[test]
 fn string_and_unsigned_reject_every_non_literal_shape() {
     reject(string(&ident("name")), "字符串字面量");
     reject(unsigned(&ident("42")), "整数字面量");
@@ -231,7 +225,6 @@ fn string_and_unsigned_reject_every_non_literal_shape() {
 }
 
 /// 类型注解的形状判据：缺关键字、`type` 后无名、既不是 `=` 也不是 `<`、`struct`/`enum` 后无名。
-#[test]
 fn type_target_rejects_every_malformed_shape() {
     reject(model_target(&[], "model"), "找不到类型定义");
     reject(model_target(&[ident("type"), punct(';')], "model"), "别名");
@@ -246,7 +239,6 @@ fn type_target_rejects_every_malformed_shape() {
 }
 
 /// 值访问器只认自己的变体：其余变体一律回落到空，避免把别的槽位的值错当成这一键。
-#[test]
 fn value_accessors_are_empty_outside_their_own_variant() {
     assert_eq!(Value::Empty.text(), "");
     assert_eq!(Value::Empty.names(), [] as [String; 0]);
@@ -266,19 +258,18 @@ fn value_accessors_are_empty_outside_their_own_variant() {
 }
 
 /// 名字既不能是空白，也不能含控制字符；两类坏字符各有一句指向名字本身的提示。
-#[test]
 fn a_name_rejects_whitespace_and_control_characters() {
     reject(checked_name(" ", 0), "空白");
     reject(checked_name("a\u{0}b", 0), "控制字符");
 }
 
 /// 每种括号在错误信息里都有可读写法；透明组没有可见括号，要写成「不可见分组」。
-#[test]
 fn every_bracket_describes_a_readable_group() {
     assert!(Bracket::Paren.describe().contains('('));
     assert!(Bracket::Brace.describe().contains('{'));
     assert!(Bracket::Square.describe().contains('['));
     assert!(Bracket::Invisible.describe().contains("不可见"));
+}
 }
 
 /// 确定性伪随机：整数混合、无随机源、无全局状态，同一 (`seed`, `case`) 在任何机器上得到同一串文本。
@@ -324,9 +315,9 @@ fn sweep_one<D: std::fmt::Debug + PartialEq>(
     }
 }
 
+testkit::test_cases! {
 /// 128 个确定性用例分别打三道文法；括号组夹具已由手写 token 用例覆盖，这里只压标识符 / 数字 /
 /// 标点 / 空白 / 转义的乱序组合，看门在任何输入下都给出可复现的结论。
-#[test]
 fn a_deterministic_sweep_keeps_every_parser_resilient_and_stable() {
     const POOL: [char; 16] = [
         'a', 'b', 'm', 'n', '0', '1', '9', '_', '=', ',', '"', '<', '>', ';', ' ', '\\',
@@ -341,7 +332,6 @@ fn a_deterministic_sweep_keeps_every_parser_resilient_and_stable() {
     }
 }
 
-#[test]
 fn a_runtime_annotation_carries_parameter_names_in_order() {
     let text = r"name = $name, out = [$tokens, $dim], ops = [$op], role = $role";
     let declaration = parse_runtime(&lex(text)).expect("合法");
@@ -358,7 +348,6 @@ fn a_runtime_annotation_carries_parameter_names_in_order() {
 }
 
 /// 运行时形态的每一条错误：字面量、裸 `$`、缺键、重复、跨类复用、`in` 不在表里。
-#[test]
 fn every_bad_runtime_annotation_is_rejected_with_an_actionable_message() {
     let cases = [
         (r#"name = "x", out = [$a], ops = [$o]"#, "`$`"),
@@ -380,7 +369,6 @@ fn every_bad_runtime_annotation_is_rejected_with_an_actionable_message() {
 }
 
 /// 运行时形态只标命名字段 struct：枚举、元组结构体与缺字段体都在注入前被拒。
-#[test]
 fn a_runtime_target_must_be_a_named_field_struct() {
     let named_fields = [
         ident("pub"),
@@ -411,7 +399,6 @@ fn a_runtime_target_must_be_a_named_field_struct() {
 }
 
 /// 空注解回落单进程默认策略；键序随意、可独立覆盖。
-#[test]
 fn parallel_annotation_defaults_to_single_process_policy() {
     let empty = parse_parallel(&lex("")).expect("空注解合法");
     assert_eq!(empty.tp, 1);
@@ -434,7 +421,6 @@ fn parallel_annotation_defaults_to_single_process_policy() {
 }
 
 /// 并行策略的每条非法写法都被闭集 / 度数 / 布尔判据拦下。
-#[test]
 fn every_bad_parallel_annotation_is_rejected() {
     let cases = [
         (r"tp = 0", "大于 0"),
@@ -450,4 +436,5 @@ fn every_bad_parallel_annotation_is_rejected() {
     for (text, needle) in cases {
         reject(parse_parallel(&lex(text)), needle);
     }
+}
 }

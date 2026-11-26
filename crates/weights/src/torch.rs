@@ -653,11 +653,3 @@ const STORAGE_DTYPES: [(&str, DType); 9] = [
 #[cfg(test)]
 #[path = "../tests/torch.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../tests/pickle.rs"]
-mod pickle_tests;
-
-#[cfg(test)]
-#[path = "../tests/zip.rs"]
-mod zip_tests;

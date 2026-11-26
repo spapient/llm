@@ -2,7 +2,7 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[test]
+testkit::test_cases! {
 fn read_preserves_every_toml_value_shape() {
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -25,7 +25,6 @@ fn read_preserves_every_toml_value_shape() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[test]
 fn read_preserves_non_finite_numbers_for_domain_validation() {
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -37,7 +36,6 @@ fn read_preserves_non_finite_numbers_for_domain_validation() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[test]
 fn collect_sorts_and_filters_toml_files() {
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -56,7 +54,6 @@ fn collect_sorts_and_filters_toml_files() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[test]
 fn read_accepts_a_table_and_rejects_a_parse_error() {
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -73,14 +70,12 @@ fn read_accepts_a_table_and_rejects_a_parse_error() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[test]
 fn relative_strips_the_base_prefix() {
     let base = Path::new("/repo/crates/prof");
     let path = base.join("ops/add.toml");
     assert_eq!(relative(base, &path), "ops/add.toml");
 }
 
-#[test]
 fn file_stem_and_extension_read_utf8_name() {
     let path = Path::new("ops/add.toml");
     assert_eq!(file_stem(path), Some("add"));
@@ -90,7 +85,6 @@ fn file_stem_and_extension_read_utf8_name() {
     assert_eq!(extension(bare), None);
 }
 
-#[test]
 fn merge_tables_nests_recursively_and_replaces_arrays() {
     let mut base = toml::from_str::<toml::Table>("[a]\nx = 1\ny = 2\ntags = [\"old\"]\n").unwrap();
     let overlay = toml::from_str::<toml::Table>("[a]\ny = 9\ntags = [\"new\"]\nz = 3\n").unwrap();
@@ -112,14 +106,12 @@ fn merge_tables_nests_recursively_and_replaces_arrays() {
     );
 }
 
-#[test]
 fn env_required_rejects_an_unset_variable() {
     // 成功分支只是 `env::var` 透传；缺失或非 UTF-8 统一归 [`Code::Missing`]。
     let error = env_required("BUILDGEN_TEST_ENV_VAR_UNSET").unwrap_err();
     assert_eq!(error.code(), Code::Missing);
 }
 
-#[test]
 fn slices_render_quoted_and_expression_elements() {
     let values = ["a".to_string(), "b".to_string()];
     assert_eq!(string_slice(&values), "&[\"a\", \"b\"]");
@@ -127,7 +119,6 @@ fn slices_render_quoted_and_expression_elements() {
     assert_eq!(expr_slice(&[]), "&[]");
 }
 
-#[test]
 fn read_text_returns_utf8_body_or_missing_error() {
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -138,7 +129,6 @@ fn read_text_returns_utf8_body_or_missing_error() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[test]
 fn files_lists_only_regular_files_sorted() {
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -157,7 +147,6 @@ fn files_lists_only_regular_files_sorted() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[test]
 fn subtable_and_string_read_required_keys_or_fail() {
     let table = toml::from_str::<toml::Table>("[meta]\nname = \"x\"\n").unwrap();
 
@@ -167,6 +156,7 @@ fn subtable_and_string_read_required_keys_or_fail() {
 
     assert!(subtable(&table, "missing").is_err());
     assert!(string(meta, "missing").is_err());
+}
 }
 
 /// 临时目录：进程号 + 原子序号 + 纳秒，避免同纳秒内并行用例撞名。

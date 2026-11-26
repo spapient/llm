@@ -1,6 +1,6 @@
 use super::*;
 
-#[test]
+testkit::test_cases! {
 fn is_deterministic_per_seed() {
     let mut a = SplitMix64::new(7);
     let mut b = SplitMix64::new(7);
@@ -9,7 +9,6 @@ fn is_deterministic_per_seed() {
     }
 }
 
-#[test]
 fn uniform_stays_in_unit_interval() {
     let mut r = SplitMix64::new(11);
     for _ in 0..10_000 {
@@ -18,11 +17,11 @@ fn uniform_stays_in_unit_interval() {
     }
 }
 
-#[test]
 fn normal_has_unit_variance() {
     let mut r = SplitMix64::new(13);
     let n = 20_000;
     let sum: f32 = (0..n).map(|_| r.next_normal()).sum();
     let mean = sum / n as f32;
     assert!(mean.abs() < 0.05, "均值 {mean}");
+}
 }

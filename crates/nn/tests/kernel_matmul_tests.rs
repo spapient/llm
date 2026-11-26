@@ -66,7 +66,7 @@ testkit::test_cases!(tn_shapes {
     assert_tn_matches(rows, n, k);
 });
 
-#[test]
+testkit::test_cases! {
 fn tn_empty_contraction_yields_zeros() {
     let mut out = vec![1.0f32; 6];
     forward_tn_tiled(
@@ -78,7 +78,6 @@ fn tn_empty_contraction_yields_zeros() {
     assert_eq!(out, vec![0.0f32; 6], "空收缩轴输出必须全零");
 }
 
-#[test]
 fn tn_forward_rejects_mismatched_bufs() {
     let x = vec![0.0f32; 8];
     let w = vec![0.0f32; 8];
@@ -97,7 +96,6 @@ fn tn_forward_rejects_mismatched_bufs() {
     assert!(scalar.is_err(), "标量入口也必须报错");
 }
 
-#[test]
 fn empty_contraction_yields_zeros() {
     let mut out = vec![1.0f32; 4];
     forward_tiled::<f32>(
@@ -109,7 +107,6 @@ fn empty_contraction_yields_zeros() {
     assert_eq!(out, vec![0.0f32; 4], "空收缩轴输出必须全零");
 }
 
-#[test]
 fn forward_rejects_mismatched_bufs() {
     let a = vec![0.0f32; 8];
     let b = vec![0.0f32; 8];
@@ -127,7 +124,6 @@ fn forward_rejects_mismatched_bufs() {
 ///
 /// 口径与 §10.10 E10 卡一致：预热后对固定窗口（20 次 512×512×512 tile 矩阵乘）计 120 个
 /// 窗口墙钟，`CV_t = σ_t/μ_t`，并报 P50/P95/P99。热节流项本机无传感器轨迹，单列不混入。
-#[test]
 #[ignore = "E10 可预测性基准：cargo test -p llm-nn --lib -- e10_predictability --release --ignored --nocapture"]
 fn e10_predictability() {
     let (m, n, k) = (512usize, 512usize, 512usize);
@@ -168,4 +164,5 @@ fn e10_predictability() {
         q(0.95) * 1e3,
         q(0.99) * 1e3,
     );
+}
 }

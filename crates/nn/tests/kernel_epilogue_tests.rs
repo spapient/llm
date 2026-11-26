@@ -3,8 +3,8 @@
 use super::apply;
 use prof::epilogue::parse;
 
+testkit::test_cases! {
 /// 空步骤是恒等：`out` 不变。
-#[test]
 fn empty_steps_are_identity() {
     let mut out = [1.0, 2.0, 3.0];
     assert!(apply(&[], &mut out, 3, None, None).is_ok());
@@ -12,7 +12,6 @@ fn empty_steps_are_identity() {
 }
 
 /// `bias` 按列广播：`out[r][c] += bias[c]`。
-#[test]
 fn bias_broadcasts_across_rows() {
     let steps = parse("bias").unwrap();
     let mut out = [1.0, 2.0, 3.0, 4.0];
@@ -21,7 +20,6 @@ fn bias_broadcasts_across_rows() {
 }
 
 /// `bias` 列宽不符：返回错误而不是静默截断。
-#[test]
 fn bias_wrong_width_is_rejected() {
     let steps = parse("bias").unwrap();
     let mut out = [0.0; 4];
@@ -29,7 +27,6 @@ fn bias_wrong_width_is_rejected() {
 }
 
 /// `residual` 逐元素加：`out[i] += residual[i]`。
-#[test]
 fn residual_adds_elementwise() {
     let steps = parse("residual").unwrap();
     let mut out = [1.0, 2.0, 3.0];
@@ -38,7 +35,6 @@ fn residual_adds_elementwise() {
 }
 
 /// `residual` 长度不符：返回错误。
-#[test]
 fn residual_wrong_len_is_rejected() {
     let steps = parse("residual").unwrap();
     let mut out = [0.0; 4];
@@ -46,7 +42,6 @@ fn residual_wrong_len_is_rejected() {
 }
 
 /// `scale:<α>` 逐元素乘。
-#[test]
 fn scale_multiplies() {
     let steps = parse("scale:0.5").unwrap();
     let mut out = [2.0, 4.0, 6.0];
@@ -55,7 +50,6 @@ fn scale_multiplies() {
 }
 
 /// `act:relu` 负区归零、正区恒等。
-#[test]
 fn relu_applies() {
     let steps = parse("act:relu").unwrap();
     let mut out = [-2.0, 0.0, 2.0];
@@ -64,7 +58,6 @@ fn relu_applies() {
 }
 
 /// `act:gelu` 与 [`crate::gelu_f32::forward`] 逐位一致：执行层只转发、不写第二份算术。
-#[test]
 fn gelu_delegates_to_unary_kernel() {
     let steps = parse("act:gelu").unwrap();
     let input = [-2.0, -1.0, 0.0, 1.0, 2.0];
@@ -76,7 +69,6 @@ fn gelu_delegates_to_unary_kernel() {
 }
 
 /// `quant:i8` 对称 round-trip：步长 0.25，最大误差 0.125，越界饱和。
-#[test]
 fn quant_i8_rounds_to_grid() {
     let steps = parse("quant:i8").unwrap();
     let mut out = [0.4, 0.13, -0.4, 100.0];
@@ -88,7 +80,6 @@ fn quant_i8_rounds_to_grid() {
 }
 
 /// `store` 是无副作用标记：`out` 不变。
-#[test]
 fn store_is_noop() {
     let steps = parse("store").unwrap();
     let mut out = [1.0, 2.0];
@@ -97,13 +88,13 @@ fn store_is_noop() {
 }
 
 /// 顺序语义：`bias; scale:2; quant:i8` 严格按声明顺序执行。
-#[test]
 fn pipeline_runs_in_declared_order() {
     let steps = parse("bias; scale:2; quant:i8").unwrap();
     let mut out = [0.5, 1.5, 2.5, 3.5];
     assert!(apply(&steps, &mut out, 2, Some(&[1.0, 2.0]), None).is_ok());
     // bias → [1.5, 3.5, 3.5, 5.5]；scale:2 → [3, 7, 7, 11]；quant:i8 已在 0.25 网格上，恒等。
     assert_eq!(out, [3.0, 7.0, 7.0, 11.0]);
+}
 }
 
 // 写回尾块的设备对拍：把 `epilogue.<ext>` 里的真实段落按声明顺序装配、编译、执行，再与
@@ -332,6 +323,7 @@ const JUST_BELOW_EIGHTH: f32 = f32::from_bits(0x3dff_ffff);
 /// 只做量化的步骤序列。
 const HALFWAY_STEPS: &[Step] = &[Step::Quant(DType::I8), Step::Store];
 
+testkit::test_cases! {
 /// 量化取整口径：半数远离零，与 `gemm::epilogue::apply` 的 `f32::round` 同口径。
 ///
 /// 三步都要守住：向量主环（前四个元素）走 `vcvtaq_s32_f32`、标量尾环（后两个元素）走
@@ -339,7 +331,6 @@ const HALFWAY_STEPS: &[Step] = &[Step::Quant(DType::I8), Step::Store];
 ///
 /// 只跑 `cpu`：其余五台的 `epilogue.*` 里仍是 `(int)(x ± 0.5f)` 的旧写法（同一处偏 1 个码字，
 /// 且超出 int 范围时是未定义行为），把这条场景放进共享表会让它们红；等五台一起改到再合表。
-#[test]
 fn cpu_quant_rounds_halfway_away_from_zero() {
     let edges = Scenario {
         name: "quant-halfway",
@@ -373,7 +364,6 @@ fn cpu_quant_rounds_halfway_away_from_zero() {
 
 /// 六台设备 × 四个场景 × 三个形状：形状这一维专门用来把 4-wide 的向量主环与标量尾环都跑到，
 /// 只在其中一个形状上过不算过。
-#[test]
 fn every_device_runs_the_declared_epilogue() {
     let mut failures = Vec::new();
     for device in prof::devices() {
@@ -392,7 +382,6 @@ fn every_device_runs_the_declared_epilogue() {
     );
 }
 
-#[test]
 fn a_wrong_expectation_is_rejected() {
     let device = prof::device("cpu").expect("cpu 在设备表里");
     let shape = SHAPES[0];
@@ -411,4 +400,5 @@ fn a_wrong_expectation_is_rejected() {
         reading.max_rel_err > TOL,
         "错误的期望值不该被判为通过：{reading:?}"
     );
+}
 }

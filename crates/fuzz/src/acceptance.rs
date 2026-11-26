@@ -73,14 +73,14 @@ impl Target for Explodes {
     }
 }
 
-#[test]
+#[cfg(test)]
+testkit::test_cases! {
 fn a_seed_derives_the_same_case_every_time() {
     let seed = Seed::new(b"gemv_i4");
     assert_eq!(seed.derive(7), seed.derive(7), "确定性是复现的前提");
     assert_ne!(seed.derive(7), seed.derive(8), "不同用例不该撞在一起");
 }
 
-#[test]
 fn adjacent_cases_differ_when_mutated() {
     let seed = Seed::new(b"0123456789abcdef");
     for case in 0..32 {
@@ -94,7 +94,6 @@ fn adjacent_cases_differ_when_mutated() {
     }
 }
 
-#[test]
 fn mutations_shrink_and_grow_the_exemplar() {
     let seed = Seed::new(b"0123456789abcdef");
     let lengths: Vec<usize> = (0..128).map(|case| seed.derive(case).len()).collect();
@@ -108,14 +107,12 @@ fn mutations_shrink_and_grow_the_exemplar() {
     );
 }
 
-#[test]
 fn a_one_byte_change_in_the_seed_spreads_to_the_stream() {
     let left = Seed::new(b"gemv_i4");
     let right = Seed::new(b"gemv_i5");
     assert_ne!(left.derive(0), right.derive(0), "一位翻转应当改变派生流");
 }
 
-#[test]
 fn an_empty_seed_is_a_legal_case() {
     let seed = Seed::new(b"");
     assert!(seed.is_empty());
@@ -125,7 +122,6 @@ fn an_empty_seed_is_a_legal_case() {
 }
 
 /// 派生长度有可预期的上界：最多三步复制/追加，不会无限膨胀，遍历成本可预期。
-#[test]
 fn derived_length_stays_within_a_bounded_window() {
     let seed = Seed::new(b"0123456789abcdef");
     for case in 0..256 {
@@ -139,7 +135,6 @@ fn derived_length_stays_within_a_bounded_window() {
 }
 
 /// 任意种子字节（空、非 UTF-8、重复字节）派生都不 panic。
-#[test]
 fn derive_handles_any_seed_bytes_without_panic() {
     let cases: [&[u8]; 4] = [&[], &[0xFF, 0x00], &[0xE2, 0x82, 0xAC], &[7u8; 64]];
     for bytes in cases {
@@ -150,19 +145,16 @@ fn derive_handles_any_seed_bytes_without_panic() {
     }
 }
 
-#[test]
 fn acceptance_and_rejection_are_both_legal_outcomes() {
     let seed = Seed::new(b"abc");
     assert!(sweep(&Accept, &seed, 3).is_ok());
     assert!(sweep(&Reject, &seed, 3).is_ok(), "拒绝不是失败");
 }
 
-#[test]
 fn zero_cases_touches_nothing() {
     assert!(sweep(&Unstable(Cell::new(false)), &Seed::new(b"x"), 0).is_ok());
 }
 
-#[test]
 fn an_empty_rejection_message_is_a_finding() {
     let finding = sweep(&Silent("   "), &Seed::new(b"abc"), 1).expect_err("空消息");
     assert_eq!(finding.contract(), "拒绝时必须给出非空消息");
@@ -176,7 +168,6 @@ fn an_empty_rejection_message_is_a_finding() {
 }
 
 /// 第 1 条契约也必须由本 crate 抓：驱动方不必自己 `catch_unwind`，也不会丢掉用例号。
-#[test]
 fn a_panicking_target_is_a_finding_with_its_case_and_input() {
     let seed = Seed::new(b"abc");
     let finding = sweep(&Explodes, &seed, 3).expect_err("panic 是违约");
@@ -197,7 +188,6 @@ fn a_panicking_target_is_a_finding_with_its_case_and_input() {
 }
 
 /// `panic_any` 的数值载荷同样是证据，按 Debug 留住——不能因此退回成"通过"。
-#[test]
 fn a_panic_any_payload_is_still_a_finding() {
     struct SilentPanic;
 
@@ -218,7 +208,6 @@ fn a_panic_any_payload_is_still_a_finding() {
     assert_eq!(message, "7", "数值 payload 按 Debug 留住：{message}");
 }
 
-#[test]
 fn an_unstable_target_is_caught_with_its_case_and_input() {
     let seed = Seed::new(b"abc");
     let finding = sweep(&Unstable(Cell::new(false)), &seed, 2).expect_err("结论不稳定");
@@ -228,7 +217,6 @@ fn an_unstable_target_is_caught_with_its_case_and_input() {
 }
 
 /// `exercise` 单条输入跑三条契约，违约以证据返回；harness 边界再把这份证据转成 panic。
-#[test]
 fn exercise_runs_the_same_contracts_as_sweep() {
     let finding = Unstable(Cell::new(false))
         .exercise(b"abc")
@@ -238,7 +226,6 @@ fn exercise_runs_the_same_contracts_as_sweep() {
 }
 
 /// `sweep_all` 收齐全部违约证据，不提前退出。
-#[test]
 fn sweep_all_collects_every_violation() {
     let findings = sweep_all(&Silent(""), &Seed::new(b"abc"), 3);
     assert_eq!(findings.len(), 3, "三条用例各自一份证据");
@@ -250,7 +237,6 @@ fn sweep_all_collects_every_violation() {
 }
 
 /// 证据的文本呈现能直接贴进 issue：目标、用例号、结论与可复现输入都在。
-#[test]
 fn a_finding_renders_a_reproducible_report() {
     let finding = sweep(&Explodes, &Seed::new(b"abc"), 1).expect_err("panic 是违约");
     let report = finding.to_string();
@@ -259,8 +245,8 @@ fn a_finding_renders_a_reproducible_report() {
     assert!(report.contains("panicked"), "报告要带结论：{report}");
 }
 
-#[test]
 fn repro_renders_utf8_as_literal_and_binary_as_hex() {
     assert_eq!(repro(b"hi").to_string(), "\"hi\"");
     assert_eq!(repro(&[0xFF, 0x00]).to_string(), "0xff00");
+}
 }

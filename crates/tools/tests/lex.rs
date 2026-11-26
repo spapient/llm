@@ -30,7 +30,7 @@ fn outline_piece(token: &Token) -> String {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn strips_comments_and_strings_before_analysis() {
     let src = "// if ? &&\nfn s() -> u8 { let x = \"if ? &&\"; 1 }\n/* if ? */\n";
     let tokens = parse(src).expect("parse");
@@ -40,7 +40,6 @@ fn strips_comments_and_strings_before_analysis() {
     assert!(!rendered.contains("/*"));
 }
 
-#[test]
 fn nested_groups_keep_order_and_positions() {
     let src = "fn f() { if a { b } else { c } }";
     let tokens = parse(src).expect("parse");
@@ -53,7 +52,6 @@ fn nested_groups_keep_order_and_positions() {
     assert_eq!(group.end_line(), 1);
 }
 
-#[test]
 fn raw_and_char_literals_are_single_tokens() {
     let src = "r#\"a ? b\"#; 'c'; 'static;";
     let tokens = parse(src).expect("parse");
@@ -64,13 +62,11 @@ fn raw_and_char_literals_are_single_tokens() {
     assert!(matches!(&tokens[5], Token::Ident { text, .. } if text == "static"));
 }
 
-#[test]
 fn unclosed_group_is_an_invalid_error() {
     let err = parse("fn f() { ").expect_err("must fail");
     assert_eq!(err.code(), Code::Invalid);
 }
 
-#[test]
 fn boundary_inputs_reach_a_stable_verdict() {
     let cases: &[(&str, bool)] = &[
         ("", true),
@@ -95,12 +91,13 @@ fn boundary_inputs_reach_a_stable_verdict() {
     let tokens = parse(&long).expect("长标识符可解析");
     assert_eq!(tokens.len(), 1);
 }
+}
 
 // ---------------------------------------------------------------------------
 // strip：剔除测试条目，保留行号与真实代码
 // ---------------------------------------------------------------------------
 
-#[test]
+testkit::test_cases! {
 fn strips_test_items_with_attached_attributes() {
     let src = "#[cfg(target_os = \"macos\")]\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn keep() {}\n";
     let stripped = strip_tests(src).expect("strip");
@@ -110,14 +107,12 @@ fn strips_test_items_with_attached_attributes() {
     assert!(stripped.contains("fn keep"));
 }
 
-#[test]
 fn keeps_not_test_items() {
     let src = "#[cfg(not(test))]\nfn real() {}\n";
     assert!(strip_tests(src).expect("strip").contains("fn real"));
 }
 
 /// 通过公开的 `strip_tests` 验证复合 `cfg(test)` 判定：只有真正含 `test` 的条目被剔除。
-#[test]
 fn detects_compound_test_cfg() {
     let stripped = |body: &str| {
         let src = format!("#[cfg({body})]\nfn real() {{}}\n");
@@ -130,7 +125,6 @@ fn detects_compound_test_cfg() {
     assert!(!stripped("feature = \"testing\""));
 }
 
-#[test]
 fn strips_inner_cfg_test_attribute() {
     let src = "#![cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn keep() {}\n";
     let stripped = strip_tests(src).expect("strip");
@@ -139,7 +133,6 @@ fn strips_inner_cfg_test_attribute() {
     assert!(stripped.contains("fn keep"));
 }
 
-#[test]
 fn braces_inside_strings_do_not_break_strip() {
     let src = "#[cfg(test)]\nmod tests {\n    let t = \"void f() { {{x}} }\";\n}\nfn keep() {}\n";
     let stripped = strip_tests(src).expect("strip");
@@ -148,7 +141,6 @@ fn braces_inside_strings_do_not_break_strip() {
 }
 
 /// 分号形式挂载的模块是独立文件，`strip_tests` 看不到其内容，只能由 `test_modules` 点名。
-#[test]
 fn names_only_the_modules_mounted_under_cfg_test() {
     let src = "#[cfg(test)]\nmod mirror;\n#[cfg(test)]\npub(crate) mod boundary;\nmod production;\n#[cfg(not(test))]\nmod bench;\n#[cfg(test)]\nmod inline {\n    fn t() {}\n}\n";
     let mods: Vec<String> = test_modules(src)
@@ -158,48 +150,45 @@ fn names_only_the_modules_mounted_under_cfg_test() {
         .collect();
     assert_eq!(mods, ["mirror".to_owned(), "boundary".to_owned()]);
 }
+}
 
 // ---------------------------------------------------------------------------
 // call：禁止形态扫描
 // ---------------------------------------------------------------------------
 
-#[test]
+testkit::test_cases! {
 fn bare_unwrap_expect_and_panic_are_caught() {
     let src = "fn f() { let a = x.unwrap(); let b = y.expect(\"m\"); panic!(\"p\"); }";
     let kinds: Vec<Kind> = scan(src).unwrap().iter().map(|c| c.kind).collect();
     assert_eq!(kinds, vec![Kind::Unwrap, Kind::Expect, Kind::Panic]);
 }
 
-#[test]
 fn unreachable_is_caught_but_its_plain_identifier_is_not() {
     let src = "fn f() { let unreachable = 1; g(unreachable); unreachable!(\"x\"); }";
     let kinds: Vec<Kind> = scan(src).unwrap().iter().map(|c| c.kind).collect();
     assert_eq!(kinds, vec![Kind::Unreachable], "只有带 `!` 的那次是宏调用");
 }
 
-#[test]
 fn unwrap_inside_a_string_is_not_flagged() {
     let src = "let s = \"x.unwrap()\";";
     assert!(scan(src).unwrap().is_empty());
 }
 
-#[test]
 fn ufcs_unwrap_expect_are_caught() {
     let src = "fn f() { let a = Option::unwrap(x); let b = Result::expect(y, \"m\"); }";
     let kinds: Vec<Kind> = scan(src).unwrap().iter().map(|c| c.kind).collect();
     assert_eq!(kinds, vec![Kind::Unwrap, Kind::Expect]);
 }
 
-#[test]
 fn ordinary_associated_function_is_not_flagged() {
     let src = "fn f() { let v = Type::new(x); }";
     assert!(scan(src).unwrap().is_empty());
 }
 
-#[test]
 fn result_returning_code_is_clean() {
     let src = "fn f() -> Result<u32, E> { let v = ok()?; Ok(v) }";
     assert!(scan(src).unwrap().is_empty());
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +203,7 @@ fn cc(src: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
-#[test]
+testkit::test_cases! {
 fn counts_conditions_like_lizard() {
     let src = r#"
 fn branch(a: bool, b: bool) -> u32 {
@@ -242,7 +231,6 @@ fn fallible(v: Option<u32>) -> Result<u32, ()> {
     );
 }
 
-#[test]
 fn function_pointer_types_are_not_definitions() {
     let src = "fn real(f: fn(u8) -> u8) -> u8 { f(1) }";
     let findings = analyze(src).expect("analyze");
@@ -250,7 +238,6 @@ fn function_pointer_types_are_not_definitions() {
     assert_eq!(findings[0].name, "real");
 }
 
-#[test]
 fn nested_functions_keep_their_own_complexity() {
     let src = "fn outer() { fn inner(a: bool) { if a { } } }";
     let by_name: BTreeMap<String, u32> = analyze(src)
@@ -262,17 +249,17 @@ fn nested_functions_keep_their_own_complexity() {
     assert_eq!(by_name["outer"], 1);
 }
 
-#[test]
 fn two_top_level_functions_are_both_collected() {
     let src = "fn first() {}\nfn second() {}\n";
     assert_eq!(cc(src).len(), 2);
+}
 }
 
 // ---------------------------------------------------------------------------
 // docs：文档相对链接
 // ---------------------------------------------------------------------------
 
-#[test]
+testkit::test_cases! {
 fn relative_links_are_collected_and_anchors_stripped() {
     let doc = "见 [架构](ARCHITECTURE.md#二) 与 [代码](../crates/tools/src/lib.rs)。";
     assert_eq!(
@@ -290,13 +277,11 @@ fn relative_links_are_collected_and_anchors_stripped() {
     );
 }
 
-#[test]
 fn external_and_pure_anchor_links_are_skipped() {
     let doc = "[site](https://x.io/a) [top](#section) [mail](mailto:a@b.c)";
     assert!(links(doc).is_empty());
 }
 
-#[test]
 fn links_carry_line_numbers_across_multiple_lines() {
     let doc = "第一行无链接。\n第二行 [a](guide.md)。\n第三行 [b](note.md#top)。";
     assert_eq!(
@@ -314,10 +299,10 @@ fn links_carry_line_numbers_across_multiple_lines() {
     );
 }
 
-#[test]
 fn empty_and_unclosed_links_are_skipped() {
     let doc = "[]()\n[open](note.md 未闭合";
     assert!(links(doc).is_empty());
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -338,14 +323,14 @@ fn line_gate() -> Gate {
     .expect("测试阈值合法")
 }
 
-#[test]
+testkit::test_cases! {
 fn an_oversized_file_is_flagged() {
     let text = (0..12).map(|_| "x").collect::<Vec<_>>().join("\n");
     assert_eq!(file_lines(&text, &line_gate()), Some(12));
 }
 
-#[test]
 fn a_file_within_budget_is_silent() {
     let text = (0..8).map(|_| "x").collect::<Vec<_>>().join("\n");
     assert_eq!(file_lines(&text, &line_gate()), None);
+}
 }

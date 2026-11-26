@@ -60,7 +60,7 @@ fn naive2d(
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn conv2d_matches_naive() {
     let cases = [
         (
@@ -123,7 +123,6 @@ fn conv2d_matches_naive() {
     }
 }
 
-#[test]
 fn conv1d_matches_naive() {
     let (n, l, cin, cout, kw, stride, pad) = (2, 9, 3, 4, 3, 2, 1);
     let conv = Conv1d::new(cin, cout, kw, stride, pad);
@@ -141,7 +140,6 @@ fn conv1d_matches_naive() {
     testkit::assert_close(&got, &want, 1e-4, 1e-3);
 }
 
-#[test]
 fn conv2d_i8_matches_exact() {
     let (n, h, w, cin, cout) = (1, 6, 6, 3, 5);
     let geom = ConvGeom {
@@ -191,6 +189,7 @@ fn conv2d_i8_matches_exact() {
     }
     assert_eq!(got, want, "量化卷积与整数直算逐位相同");
 }
+}
 
 /// 池化用例的公共跑法：按输出形状造确定性样本与同形输出，前向由调用点注入。
 ///
@@ -207,7 +206,7 @@ fn pooled(
     (x, got)
 }
 
-#[test]
+testkit::test_cases! {
 fn max_pool_matches_naive() {
     let pool = MaxPool2d {
         geom: ConvGeom {
@@ -244,7 +243,6 @@ fn max_pool_matches_naive() {
     testkit::assert_close(&got, &want, 1e-4, 1e-3);
 }
 
-#[test]
 fn avg_pool_counts_only_real_cells() {
     // 3×3 输入、2×2..1 补零、步长 2 → 输出 2×2；左上窗口只有 (0,0) 一个真实单元。
     let pool = AvgPool2d {
@@ -268,7 +266,6 @@ fn avg_pool_counts_only_real_cells() {
 }
 
 /// 卷积端到端吞吐（含 im2col + 分配）：`cargo test --release -p llm-nn --lib -- --ignored --nocapture bench_conv`
-#[test]
 #[ignore = "卷积吞吐基线，手动跑"]
 fn bench_conv() {
     use std::time::Instant;
@@ -350,7 +347,6 @@ fn bench_conv() {
     }
 }
 
-#[test]
 fn maxpool1d_matches_naive() {
     // NHWC，l=6、c=1，窗口 3 步长 2 补零 1 → 输出长 4。
     let x = [1.0f32, 5.0, 2.0, 8.0, 3.0, 0.5];
@@ -369,7 +365,6 @@ fn maxpool1d_matches_naive() {
     assert!(MaxPool1d { k: 0, s: 1, p: 0 }.len(4).is_err());
 }
 
-#[test]
 fn adaptive_avg_pool_matches_block_means() {
     // 4×4 单通道压到 2×2：每格正好 2×2 块。
     let x: Vec<f32> = (0..16).map(|v| v as f32).collect();
@@ -409,7 +404,6 @@ fn adaptive_avg_pool_matches_block_means() {
     );
 }
 
-#[test]
 fn interpolate_nearest_and_bilinear() {
     // 2×2 单通道升到 4×4：最近邻严格复制左上角。
     let x = [1.0f32, 2.0, 3.0, 4.0];
@@ -458,7 +452,6 @@ fn interpolate_nearest_and_bilinear() {
     );
 }
 
-#[test]
 fn convolution_padding_overflow_is_an_error_not_a_panic() {
     let geom = ConvGeom {
         kh: 1,
@@ -472,7 +465,6 @@ fn convolution_padding_overflow_is_an_error_not_a_panic() {
     assert!(geom.ow(1).is_err(), "宽度补零加法必须受检");
 }
 
-#[test]
 fn convolution_patch_overflow_is_checked_and_never_wraps() {
     let geom = ConvGeom {
         kh: usize::MAX,
@@ -484,4 +476,5 @@ fn convolution_patch_overflow_is_checked_and_never_wraps() {
     };
     assert_eq!(geom.patch(3), usize::MAX, "估算值饱和而不回绕");
     assert!(geom.checked_patch(3).is_err(), "执行几何必须拒绝溢出");
+}
 }

@@ -95,7 +95,8 @@ mod tests {
     const RUST: &str =
         "fn cutile_a(x: *const f32, y: *mut f32, n: usize);\nfn cutile_b(rounds: usize);";
 
-    #[test]
+    #[cfg(test)]
+    testkit::test_cases! {
     fn header_parses_pointer_and_size_classes() {
         let sigs = parse_header(HEADER);
         let a = sigs
@@ -108,7 +109,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn rust_externs_parse_matching_classes() {
         let sigs = parse_rust_externs(RUST);
         let b = sigs
@@ -118,7 +118,6 @@ mod tests {
         assert_eq!(b.params, vec![FfiParam::Size]);
     }
 
-    #[test]
     fn multiline_rust_externs_parse() {
         let rust = "fn cutile_a(\n    x: *const f32,\n    y: *mut f32,\n    n: usize\n);";
         let sigs = parse_rust_externs(rust);
@@ -132,13 +131,11 @@ mod tests {
         );
     }
 
-    #[test]
     fn aligned_signatures_pass() {
         let expected: BTreeSet<&str> = ["cutile_a", "cutile_b"].into_iter().collect();
         assert!(align(&expected, HEADER, RUST).is_ok());
     }
 
-    #[test]
     fn shape_mismatch_is_rejected() {
         let rust = "fn cutile_a(x: *mut f32, y: *mut f32, n: usize);";
         let expected: BTreeSet<&str> = ["cutile_a"].into_iter().collect();
@@ -146,11 +143,11 @@ mod tests {
         assert!(err.to_string().contains("形状不一致"));
     }
 
-    #[test]
     fn missing_and_unknown_symbols_are_rejected() {
         let expected: BTreeSet<&str> = ["cutile_a"].into_iter().collect();
         let rust = "fn cutile_z(x: usize);";
         let err = align(&expected, HEADER, rust).unwrap_err();
         assert!(err.to_string().contains("缺签名") || err.to_string().contains("未登记"));
+    }
     }
 }

@@ -28,7 +28,7 @@ fn rank_two() -> Vec<f32> {
     w
 }
 
-#[test]
+testkit::test_cases! {
 fn stability_threshold_is_strict() {
     assert_eq!(stable(1.0, 0.1), Stable::Pass);
 
@@ -39,7 +39,6 @@ fn stability_threshold_is_strict() {
     assert_eq!(stable(0.2, 0.1), Stable::Fail, "等号不算严格大于");
 }
 
-#[test]
 fn certified_rank_stops_at_the_spectral_gap() {
     let sigma = [10.0, 5.0, 1.0, 0.0];
 
@@ -58,7 +57,6 @@ fn certified_rank_stops_at_the_spectral_gap() {
     );
 }
 
-#[test]
 fn the_payload_audit_rejects_a_certificate_that_names_another_measurement() {
     let cert = certify(&diag4(), 4, 4).expect("可认证").expect("有谱隙");
 
@@ -99,7 +97,6 @@ fn the_payload_audit_rejects_a_certificate_that_names_another_measurement() {
     }
 }
 
-#[test]
 fn certify_reports_the_gated_rank_and_a_lossless_note() {
     let cert = certify(&diag4(), 4, 4).expect("可认证").expect("有谱隙");
 
@@ -134,7 +131,6 @@ fn certify_reports_the_gated_rank_and_a_lossless_note() {
 }
 
 /// 精确秩 2 的矩阵：认证出的秩就是 2，残差到机器精度、往返逐位。
-#[test]
 fn a_low_rank_matrix_certifies_at_its_exact_rank() {
     let cert = certify(&rank_two(), 6, 6).expect("可认证").expect("有谱隙");
 
@@ -157,7 +153,6 @@ fn a_low_rank_matrix_certifies_at_its_exact_rank() {
     );
 }
 
-#[test]
 fn a_matrix_without_a_gap_is_rejected() {
     // 全零：所有奇异值为 0，谱隙 0 不大于 2ε = 0 → 拒压，而不是假装无损。
 
@@ -168,7 +163,6 @@ fn a_matrix_without_a_gap_is_rejected() {
     assert!(certify(&[1.0, 2.0, 3.0], 1, 3).expect("形状合法").is_none());
 }
 
-#[test]
 fn a_bad_shape_is_an_error() {
     assert_eq!(
         certify(&[1.0, 2.0, 3.0], 2, 2).unwrap_err().code(),
@@ -181,6 +175,7 @@ fn a_bad_shape_is_an_error() {
         certify(&[1.0], usize::MAX, 2).unwrap_err().code(),
         Code::Invalid
     );
+}
 }
 
 /// 一张自洽的证书：L0 诊断界、残差方法、无补偿误差。
@@ -212,7 +207,7 @@ fn valid() -> Note {
     }
 }
 
-#[test]
+testkit::test_cases! {
 fn note_roundtrips_through_bytes() {
     let note = valid();
 
@@ -229,7 +224,6 @@ fn note_roundtrips_through_bytes() {
     assert!(cur.remaining().is_empty(), "编码不许留尾巴");
 }
 
-#[test]
 fn an_unknown_method_or_bound_code_is_rejected() {
     // 秩 2 只占 1 字节，于是布局是 rank|used|mode|stable|method|bound|…：方法码在 4、界码在 5。
 
@@ -248,7 +242,6 @@ fn an_unknown_method_or_bound_code_is_rejected() {
     }
 }
 
-#[test]
 fn the_synthesis_error_adds_the_two_disjoint_terms() {
     // §4.8：`E_decomp` 与 `E_comp` 来自不同产物，相加就是 `ε_synth`，不重复计入。
 
@@ -272,7 +265,6 @@ fn the_synthesis_error_adds_the_two_disjoint_terms() {
     assert!((note.synth() - 3e-3).abs() < 1e-18);
 }
 
-#[test]
 fn a_candidate_only_measurement_cannot_sign_a_pass() {
     // §4.2.1：幂迭代这类只够排序的 `ε` 不能当证书。
 
@@ -295,7 +287,6 @@ fn a_candidate_only_measurement_cannot_sign_a_pass() {
     assert!(check_note(&open).is_ok());
 }
 
-#[test]
 fn an_l0_prime_candidate_bound_cannot_sign_lossless() {
     let note = Note {
         bound: Bound::Candidate,
@@ -318,7 +309,6 @@ fn an_l0_prime_candidate_bound_cannot_sign_lossless() {
     assert!(check_note(&open).is_ok());
 }
 
-#[test]
 fn a_rank_choice_must_name_its_bound() {
     let note = Note {
         bound: Bound::None,
@@ -341,7 +331,6 @@ fn a_rank_choice_must_name_its_bound() {
     assert!(check_note(&unused).is_ok());
 }
 
-#[test]
 fn a_compensation_error_only_belongs_to_the_residual_mode() {
     // 纯截断只丢低秩项，没有补偿产物，就没有补偿误差。
 
@@ -358,7 +347,6 @@ fn a_compensation_error_only_belongs_to_the_residual_mode() {
     assert!(check_note(&trunc).is_err());
 }
 
-#[test]
 fn a_bitwise_roundtrip_forbids_counting_the_compensation_twice() {
     let note = Note {
         comp: 1e-9,
@@ -369,7 +357,6 @@ fn a_bitwise_roundtrip_forbids_counting_the_compensation_twice() {
     assert!(check_note(&note).is_err());
 }
 
-#[test]
 fn every_name_is_stable_and_distinct() {
     let methods: Vec<&str> = [
         EpsMethod::Backward,
@@ -397,7 +384,6 @@ fn every_name_is_stable_and_distinct() {
     assert_eq!(bounds, ["l0_diagnostic", "l0prime_candidate_open", "none"]);
 }
 
-#[test]
 fn invariant_violations_are_rejected() {
     let base = Note {
         gap: 0.1, // Pass 但 gap 不 > 2eps
@@ -418,4 +404,141 @@ fn invariant_violations_are_rejected() {
     };
 
     assert!(check_note(&contradictory).is_err());
+}
+}
+
+// ---- Jacobi SVD ----
+
+fn frob_resid(a: &[f64], back: &[f64]) -> f64 {
+    a.iter()
+        .zip(back)
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+testkit::test_cases! {
+fn diagonal_singular_values_are_exact() {
+    // diag(3,2,1,0.5) 行主序。
+    let mut a = vec![0.0f64; 16];
+    let diag = [3.0, 2.0, 1.0, 0.5];
+    for (i, d) in diag.iter().enumerate() {
+        a[i * 4 + i] = *d;
+    }
+    let svd = compute_svd(&a, 4, 4).expect("svd");
+    for (got, want) in svd.sigma.iter().zip(diag.iter()) {
+        assert!((got - want).abs() < 1e-10, "got {got} want {want}");
+    }
+}
+
+fn full_reconstruction_residual_is_machine_order() {
+    let mut rng = 0x1234_5678u64;
+    let mut next = || {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (rng >> 40) as f64 / (1u64 << 24) as f64 - 0.5
+    };
+    for (m, n) in [(8, 8), (12, 6), (6, 12), (20, 10)] {
+        let a: Vec<f64> = (0..m * n).map(|_| next()).collect();
+        let svd = compute_svd(&a, m, n).expect("svd");
+        let k = m.min(n);
+        assert_eq!(svd.sigma.len(), k);
+        let back = svd.reconstruct(k);
+        let scale = svd.sigma[0];
+        assert!(
+            frob_resid(&a, &back) < 1e-10 * scale * (m as f64).sqrt(),
+            "残差应在机器精度量级 m={m} n={n}"
+        );
+    }
+}
+
+fn truncated_reconstruction_is_monotonic() {
+    let mut a = vec![0.0f64; 36];
+    for i in 0..6 {
+        a[i * 6 + i] = 6.0 - i as f64;
+    }
+    let svd = compute_svd(&a, 6, 6).expect("svd");
+    let mut prev = f64::INFINITY;
+    for r in 1..=6 {
+        let err = frob_resid(&a, &svd.reconstruct(r));
+        assert!(err <= prev, "增加秩不应让误差变大");
+        prev = err;
+    }
+}
+
+fn singular_values_are_descending_and_nonnegative() {
+    let mut rng = 99u64;
+    let a: Vec<f64> = (0..64)
+        .map(|_| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (rng >> 40) as f64 / (1u64 << 24) as f64
+        })
+        .collect();
+    let svd = compute_svd(&a, 8, 8).expect("svd");
+    for pair in svd.sigma.windows(2) {
+        assert!(pair[0] >= pair[1]);
+        assert!(pair[0] >= 0.0);
+    }
+}
+
+fn bad_shape_is_an_error() {
+    assert!(compute_svd(&[1.0], 2, 2).is_err());
+    assert!(compute_svd(&[], 0, 4).is_err());
+}
+
+/// 信号秩选择：结构化的秩边界有相对谱隙 → 秩 10；满秩噪声平坦谱 → 拒压；单一奇异值无从比较 → 拒压。
+fn signal_rank_separates_structure_from_noise() {
+    let mut structured = vec![10.0f64; 10];
+    structured.extend(vec![0.1f64; 6]);
+    assert_eq!(signal_rank(&structured), Some(10));
+
+    let noise: Vec<f64> = (0..16).map(|k| 10.0 - k as f64 * 0.1).collect();
+    assert_eq!(signal_rank(&noise), None);
+
+    assert_eq!(signal_rank(&[1.0]), None);
+}
+
+/// SVD 分解/重建吞吐（`#[ignore]`）：
+/// `cargo test -p llm-weights --lib -- svd_throughput --release --ignored --nocapture`。
+///
+/// 确定性 f64 方阵的 `compute`（Jacobi）与 `reconstruct(r=10)` 计时，报秒/矩阵。5 轮取中位数，
+/// 只出数字、不做断言——吞吐随机器浮动。`compute` 是 `compensate` 路径的主成本，此表用于
+/// 定位该路径的优化重点。
+#[ignore = "吞吐基准：cargo test -p llm-weights --lib -- svd_throughput --release --ignored --nocapture"]
+fn svd_throughput() {
+    for n in [256usize, 512, 1024] {
+        let a = svd_matrix(n, 0xabcd_1234);
+        let mut c_samples = [0.0f64; 5];
+        for slot in &mut c_samples {
+            let start = std::time::Instant::now();
+            let svd = compute_svd(&a, n, n).expect("svd");
+            std::hint::black_box(&svd);
+            *slot = start.elapsed().as_secs_f64();
+        }
+        c_samples.sort_by(f64::total_cmp);
+        let svd = compute_svd(&a, n, n).expect("svd");
+        let mut r_samples = [0.0f64; 5];
+        for slot in &mut r_samples {
+            let start = std::time::Instant::now();
+            let back = svd.reconstruct(10);
+            std::hint::black_box(&back);
+            *slot = start.elapsed().as_secs_f64();
+        }
+        r_samples.sort_by(f64::total_cmp);
+        println!(
+            "svd n={n} compute={:.4}s reconstruct(r=10)={:.5}s",
+            c_samples[2], r_samples[2]
+        );
+    }
+}
+}
+
+/// 确定性 f64 方阵（幅度约 [−0.5,0.5)）。
+fn svd_matrix(n: usize, seed: u64) -> Vec<f64> {
+    let mut state = seed | 1;
+    (0..n * n)
+        .map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (state >> 40) as f64 / (1u64 << 24) as f64 - 0.5
+        })
+        .collect()
 }

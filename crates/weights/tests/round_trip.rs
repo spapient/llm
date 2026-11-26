@@ -41,7 +41,7 @@ fn write_pair(prefix: &str) -> std::path::PathBuf {
     target
 }
 
-#[test]
+testkit::test_cases! {
 fn every_wire_type_round_trips_byte_for_byte() {
     let mut writer = Writer::new();
     for (idx, wire) in Wire::ALL.iter().enumerate() {
@@ -63,7 +63,6 @@ fn every_wire_type_round_trips_byte_for_byte() {
     }
 }
 
-#[test]
 fn a_quantized_segment_keeps_its_scheme() {
     let quant = Quant::new(1, 0, 32, false, Wire::F16, None).expect("per-block");
     let segment = Segment::new(
@@ -90,7 +89,6 @@ fn a_quantized_segment_keeps_its_scheme() {
     );
 }
 
-#[test]
 fn a_flipped_bit_is_rejected_by_the_global_crc() {
     let bytes = Writer::new()
         .push(segment_of(Wire::F32, 0))
@@ -105,7 +103,6 @@ fn a_flipped_bit_is_rejected_by_the_global_crc() {
     assert_eq!(error.code().as_str(), "invalid");
 }
 
-#[test]
 fn a_truncated_file_is_rejected() {
     let bytes = Writer::new()
         .push(segment_of(Wire::F16, 0))
@@ -116,7 +113,6 @@ fn a_truncated_file_is_rejected() {
     assert!(Archive::parse(cut).is_err());
 }
 
-#[test]
 fn checksums_can_be_disabled_and_then_a_flip_survives() {
     let mut writer = Writer::new();
     writer.checksum(false);
@@ -130,7 +126,6 @@ fn checksums_can_be_disabled_and_then_a_flip_survives() {
     assert!(Archive::parse(&damaged).is_ok(), "关闭校验后读端不验 CRC");
 }
 
-#[test]
 fn merkle_proofs_round_trip_and_bind_names() {
     let mut writer = Writer::new();
     for idx in 0..5 {
@@ -157,7 +152,6 @@ fn merkle_proofs_round_trip_and_bind_names() {
     assert!(!archive.verify(0, &proof0, &[0u8; 32]).expect("验证"));
 }
 
-#[test]
 fn atomic_write_produces_a_valid_file_without_temp_residue() {
     let target = write_pair("llm_atomic");
     let on_disk = std::fs::read(&target).expect("读回");
@@ -178,7 +172,6 @@ fn atomic_write_produces_a_valid_file_without_temp_residue() {
 // `storage::Mmap` 只在 Unix 目标上存在（`mmap` feature 的 `cfg(all(feature = "mmap", unix))`），
 // 因此这条用例也只在 Unix 上编译——非 Unix 目标不静默跳过，而是根本不存在这条断言。
 #[cfg(unix)]
-#[test]
 fn a_mapped_file_opens_without_copying_into_memory() {
     let target = write_pair("llm_mmap_open");
 
@@ -198,7 +191,6 @@ fn a_mapped_file_opens_without_copying_into_memory() {
     std::fs::remove_file(&target).expect("清理");
 }
 
-#[test]
 fn incremental_patch_recovers_cur_byte_for_byte() {
     // 模拟训练微调：base 是 8192 个 f32，cur 只改其中 3 个值，形状完全不变。
     let base_vals = vec![0.5f32; 8192];
@@ -245,7 +237,6 @@ fn incremental_patch_recovers_cur_byte_for_byte() {
     assert_eq!(joined[0].data, cur_logical.as_ref());
 }
 
-#[test]
 fn safetensors_entries_round_trip_byte_for_byte() {
     let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
                    "b": {"dtype": "F16", "shape": [4], "data_offsets": [24, 32]}}"#;
@@ -259,7 +250,6 @@ fn safetensors_entries_round_trip_byte_for_byte() {
     assert_eq!(Reader::read(&archive, b).expect("可读"), &data[24..]);
 }
 
-#[test]
 fn safetensors_file_backend_reads_back_the_same_bytes() {
     let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
                    "b": {"dtype": "I8", "shape": [4], "data_offsets": [24, 28]}}"#;
@@ -290,7 +280,6 @@ fn safetensors_file_backend_reads_back_the_same_bytes() {
     std::fs::remove_file(&target).expect("清理");
 }
 
-#[test]
 fn quantized_grouping_survives_a_safetensors_round_trip() {
     // 真实 4 位打包：权重按 U8 存两个 nibble 一个字节（第二维是字节数），标度每分组一个 F16。
     // 分组由标度形状推出，不经打包条目猜；这条往返守护推断结果不退化。
@@ -317,7 +306,6 @@ fn quantized_grouping_survives_a_safetensors_round_trip() {
     );
 }
 
-#[test]
 fn axes_codec_round_trips_low_cardinality_f32() {
     let vals = [0.25f32, -0.5, 0.75, 1.5];
     let w: Vec<f32> = (0..64 * 64).map(|i| vals[i % vals.len()]).collect();
@@ -343,6 +331,7 @@ fn axes_codec_round_trips_low_cardinality_f32() {
         data.as_slice()
     );
 }
+}
 
 // ---------------------------------------------------------------------------
 // 中性条目流导入往返
@@ -358,7 +347,7 @@ fn fixture() -> (String, Vec<u8>) {
     (json.to_string(), data)
 }
 
-#[test]
+testkit::test_cases! {
 fn archive_imports_entries_then_round_trips_through_u_container() {
     let (json, data) = fixture();
     let bytes = safetensors_file(&json, &data);
@@ -410,7 +399,6 @@ fn archive_imports_entries_then_round_trips_through_u_container() {
     );
 }
 
-#[test]
 fn file_backend_imports_the_same_entries_as_the_archive() {
     let (json, data) = fixture();
     let bytes = safetensors_file(&json, &data);
@@ -441,7 +429,6 @@ fn file_backend_imports_the_same_entries_as_the_archive() {
     std::fs::remove_file(&target).expect("清理");
 }
 
-#[test]
 fn path_dispatch_rejects_an_unregistered_extension() {
     let target = std::env::temp_dir().join(format!("llm_import_{}.binx", std::process::id()));
     std::fs::write(&target, b"nope").expect("写临时文件");
@@ -449,4 +436,5 @@ fn path_dispatch_rejects_an_unregistered_extension() {
     let error = segments_from_path(&target).expect_err("未登记后缀必须显式失败");
     assert_eq!(error.code(), Code::Unsupported);
     std::fs::remove_file(&target).expect("清理");
+}
 }

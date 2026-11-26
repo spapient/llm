@@ -345,6 +345,28 @@ pub(super) unsafe fn sdot_block_probe(rounds: usize, a: *const i8, b: *const i8,
     }
 }
 
+#[cfg(test)]
+fn fma_fixture(k: usize) -> (Vec<f32>, Vec<f32>) {
+    let a = (0..FMA_MR * k)
+        .map(|i| (i % 7) as f32 * 0.25 - 0.5)
+        .collect();
+    let b = (0..FMA_NR * k)
+        .map(|i| (i % 5) as f32 * 0.5 - 1.0)
+        .collect();
+    (a, b)
+}
+
+#[cfg(test)]
+fn assert_fma_matches(scalar: &[f32], accelerated: &[f32]) {
+    for (scalar, accelerated) in scalar.iter().zip(accelerated) {
+        let tolerance = 1e-4 * scalar.abs().max(1.0);
+        assert!(
+            (scalar - accelerated).abs() <= tolerance,
+            "scalar={scalar} accelerated={accelerated}"
+        );
+    }
+}
+
 #[cfg(all(test, target_arch = "aarch64"))]
 mod tests {
     use super::{FMA_MR, FMA_NR, SDOT_MR, SDOT_NR};
@@ -353,22 +375,14 @@ mod tests {
     #[test]
     fn neon_fma_matches_scalar() {
         let k = 32usize;
-        let a: Vec<f32> = (0..FMA_MR * k)
-            .map(|i| (i % 7) as f32 * 0.25 - 0.5)
-            .collect();
-        let b: Vec<f32> = (0..FMA_NR * k)
-            .map(|i| (i % 5) as f32 * 0.5 - 1.0)
-            .collect();
+        let (a, b) = super::fma_fixture(k);
         let mut scalar = vec![0.0f32; FMA_MR * FMA_NR];
         let mut neon = vec![0.0f32; FMA_MR * FMA_NR];
         super::fma_scalar(&a, &b, &mut scalar, 0, 0, FMA_NR, k, true);
         unsafe {
             super::fma_neon(&a, &b, &mut neon, 0, 0, FMA_NR, k, true);
         }
-        for (s, v) in scalar.iter().zip(&neon) {
-            let tol = 1e-4 * s.abs().max(1.0);
-            assert!((s - v).abs() <= tol, "scalar={s} neon={v}");
-        }
+        super::assert_fma_matches(&scalar, &neon);
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -392,7 +406,7 @@ mod tests {
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests_x86 {
-    use super::{FMA_MR, FMA_NR, fma_avx2, fma_scalar};
+    use super::{FMA_MR, FMA_NR, assert_fma_matches, fma_avx2, fma_fixture, fma_scalar};
 
     #[test]
     fn avx2_fma_matches_scalar() {
@@ -402,21 +416,13 @@ mod tests_x86 {
             return;
         }
         let k = 32usize;
-        let a: Vec<f32> = (0..FMA_MR * k)
-            .map(|i| (i % 7) as f32 * 0.25 - 0.5)
-            .collect();
-        let b: Vec<f32> = (0..FMA_NR * k)
-            .map(|i| (i % 5) as f32 * 0.5 - 1.0)
-            .collect();
+        let (a, b) = fma_fixture(k);
         let mut scalar = vec![0.0f32; FMA_MR * FMA_NR];
         let mut avx2 = vec![0.0f32; FMA_MR * FMA_NR];
         fma_scalar(&a, &b, &mut scalar, 0, 0, FMA_NR, k, true);
         unsafe {
             fma_avx2(&a, &b, &mut avx2, 0, 0, FMA_NR, k, true);
         }
-        for (s, v) in scalar.iter().zip(&avx2) {
-            let tol = 1e-4 * s.abs().max(1.0);
-            assert!((s - v).abs() <= tol, "scalar={s} avx2={v}");
-        }
+        assert_fma_matches(&scalar, &avx2);
     }
 }

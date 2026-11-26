@@ -714,8 +714,9 @@ fn parse_u32(text: &str) -> Result<u32, String> {
 mod tests {
     use super::*;
 
+    #[cfg(test)]
+    testkit::test_cases! {
     /// 一份完整算子表逐字段解码成模型。
-    #[test]
     fn parses_a_full_op_table() {
         let text = r#"
             [op]
@@ -770,7 +771,6 @@ mod tests {
     }
 
     /// 区间四种写法分别落到对应模型形态。
-    #[test]
     fn parses_span_forms() {
         let span = |text: &str| parse_span(&Value::String(text.to_string())).expect("区间合法");
         assert_eq!(span("16"), SpanModel::Exact(16));
@@ -780,7 +780,6 @@ mod tests {
     }
 
     /// 深度合并：同名子表递归合并，标量被覆盖。
-    #[test]
     fn merge_deep_merges_nested_tables() {
         let base = toml::from_str::<Table>("[inner]\nx = 1\na = 1\n").expect("base");
         let over = toml::from_str::<Table>("[inner]\ny = 2\nb = 2\n").expect("over");
@@ -796,7 +795,6 @@ mod tests {
     }
 
     /// 档展开：每档替换 `dt` 精度并改名 `<算法>_<档>`。
-    #[test]
     fn expands_tiers_and_substitutes_dt() {
         let table = toml::from_str::<Table>(
             r#"
@@ -820,7 +818,6 @@ mod tests {
         assert_eq!(dt[0].as_str(), Some("f16"));
     }
 
-    #[test]
     fn expands_a_family_without_losing_shared_sections() {
         let table = toml::from_str::<Table>(
             r#"
@@ -850,7 +847,6 @@ mod tests {
         assert_eq!(documents[1].1["consts"]["unexpr"].as_str(), Some("x * x"));
     }
 
-    #[test]
     fn rejects_mixed_single_and_family_declarations() {
         let table = toml::from_str::<Table>(
             "[op]\nname = 'single'\n[[operators]]\nop = { name = 'family' }\n",
@@ -858,5 +854,6 @@ mod tests {
         .expect("合法 TOML");
         let error = documents("mixed", &table).expect_err("混用必须失败");
         assert!(error.contains("不能同时包含"));
+    }
     }
 }
