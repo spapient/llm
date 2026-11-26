@@ -1,6 +1,6 @@
 use super::*;
 
-fn attention_inputs(sample: &Sample) -> [tensor::View<'_>; 3] {
+fn attention_inputs(sample: &Sample) -> [tensor::View<'_, f32>; 3] {
     ["q", "k", "v"].map(|name| {
         tensor::View::matrix(8, 8, sample.f32(name).unwrap())
             .unwrap_or_else(|_| panic!("{name} 二维"))
