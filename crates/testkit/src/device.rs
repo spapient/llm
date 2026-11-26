@@ -478,6 +478,13 @@ mod tests {
         }
     }
 
+    fn rejects(verdict: Result<(), String>, reason: &str) {
+        assert!(
+            verdict.as_ref().is_err_and(|text| text.contains(reason)),
+            "{verdict:?}"
+        );
+    }
+
     fn witness(expect: &[f32]) -> Provision<'_> {
         Provision {
             witness: Some(Witness {
@@ -488,132 +495,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_signature_is_read_from_the_first_comment() {
-        assert_eq!(sign(SIGNED).ok(), Some(("load", "scalar_copy")));
-        assert!(sign("$0 = $1;").is_err(), "缺签名声明必须被发现");
-        assert!(sign("/* cutile-sign: load */").is_err(), "少一段必须被发现");
-    }
+    crate::test_cases!(signatures {
+        a_signature_is_read_from_the_first_comment => || {
+            assert_eq!(sign(SIGNED).ok(), Some(("load", "scalar_copy")));
+            assert!(sign("$0 = $1;").is_err());
+            assert!(sign("/* cutile-sign: load */").is_err());
+        },
+        only_real_definitions_are_witnesses => || {
+            let source = "// `int witness_<name>(float *out)` 只是注释\n\
+                          int witness_dot(float *out) { out[0] = 1.0f; return 1; }\n\
+                          int helper(int x) { return x; }\n";
+            assert_eq!(definitions(source), ["witness_dot"]);
+        },
+        a_well_formed_probe_passes_every_judgement => || {
+            let source = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n";
+            let contract = probe(&PROVIDES, source);
+            assert_eq!(contract.check_p0_set(), Ok(()));
+            assert_eq!(contract.check_signatures(), Ok(()));
+            assert_eq!(contract.check_witness_entries(), Ok(()));
+            assert_eq!(contract.check_evidence(), Ok(()));
+        },
+    }, |case: fn()| case());
 
-    #[test]
-    fn only_real_definitions_are_witnesses() {
-        let source = "// `int witness_<name>(float *out)` 只是注释\n\
-                      int witness_dot(float *out) { out[0] = 1.0f; return 1; }\n\
-                      int helper(int x) { return x; }\n";
-        assert_eq!(definitions(source), ["witness_dot"]);
-    }
+    crate::test_cases!(defects {
+        a_signature_the_archive_does_not_claim_is_a_defect => || {
+            let fragments = [("load", "/* cutile-sign: load/vectorized */\n$0 = $1;")];
+            rejects(
+                with_fragments(&fragments, &PROVIDES, "").check_signatures(),
+                "没有对应供给",
+            );
+        },
+        an_unclaimed_witness_is_a_defect => || {
+            let source = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n\
+                          int witness_orphan(float *out) { out[0] = 1.0f; return 1; }\n";
+            rejects(probe(&PROVIDES, source).check_witness_entries(), "没有任何供给认领");
+        },
+        a_provision_without_any_evidence_is_a_defect => || {
+            let bare = [PROVIDES[0], Provision { prim: "mma", impl_name: "cube", witness: None }];
+            rejects(probe(&bare, "").check_evidence(), "无凭无据");
+        },
+        a_fragment_set_that_overruns_p0_is_a_defect => || {
+            let fragments = [("load", SIGNED), ("load", SIGNED)];
+            rejects(with_fragments(&fragments, &PROVIDES, "").check_p0_set(), "抢同一个原语");
+        },
+    }, |case: fn()| case());
 
-    #[test]
-    fn a_well_formed_probe_passes_every_judgement() {
-        let source = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n";
-        let contract = probe(&PROVIDES, source);
-        assert_eq!(contract.check_p0_set(), Ok(()));
-        assert_eq!(contract.check_signatures(), Ok(()));
-        assert_eq!(contract.check_witness_entries(), Ok(()));
-        assert_eq!(contract.check_evidence(), Ok(()));
-    }
-
-    #[test]
-    fn a_signature_the_archive_does_not_claim_is_a_defect() {
-        let fragments = [("load", "/* cutile-sign: load/vectorized */\n$0 = $1;")];
-        let defect = with_fragments(&fragments, &PROVIDES, "").check_signatures();
-        assert!(
-            defect
-                .as_ref()
-                .is_err_and(|reason| reason.contains("没有对应供给")),
-            "{defect:?}"
-        );
-    }
-
-    #[test]
-    fn an_unclaimed_witness_is_a_defect() {
-        let source = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n\
-                      int witness_orphan(float *out) { out[0] = 1.0f; return 1; }\n";
-        let defect = probe(&PROVIDES, source).check_witness_entries();
-        assert!(
-            defect
-                .as_ref()
-                .is_err_and(|reason| reason.contains("没有任何供给认领")),
-            "{defect:?}"
-        );
-    }
-
-    #[test]
-    fn a_provision_without_any_evidence_is_a_defect() {
-        let bare = [
-            PROVIDES[0],
-            Provision {
-                prim: "mma",
-                impl_name: "cube",
-                witness: None,
-            },
-        ];
-        let defect = probe(&bare, "").check_evidence();
-        assert!(
-            defect
-                .as_ref()
-                .is_err_and(|reason| reason.contains("无凭无据")),
-            "{defect:?}"
-        );
-    }
-
-    #[test]
-    fn a_fragment_set_that_overruns_p0_is_a_defect() {
-        let fragments = [("load", SIGNED), ("load", SIGNED)];
-        let defect = with_fragments(&fragments, &PROVIDES, "").check_p0_set();
-        assert!(
-            defect
-                .as_ref()
-                .is_err_and(|reason| reason.contains("抢同一个原语")),
-            "{defect:?}"
-        );
-    }
-
-    #[test]
-    fn a_self_contained_witness_is_accepted_but_a_quoted_include_is_not() {
-        let good = [witness(&[2.0])];
-        assert_eq!(probe(&good, SOURCE).check_self_contained(), Ok(()));
-        assert_eq!(
-            probe(&good, "#include <math.h>\n").check_self_contained(),
-            Ok(())
-        );
-        let defect = probe(&good, "#include \"preamble.h\"\n").check_self_contained();
-        assert!(
-            defect
-                .as_ref()
-                .is_err_and(|reason| reason.contains("引号包含")),
-            "{defect:?}"
-        );
-    }
-
-    #[test]
-    fn expectations_must_fit_the_reading_buf() {
-        let good = [witness(&[2.0])];
-        assert_eq!(probe(&good, SOURCE).check_expectations(), Ok(()));
-        let overflow = [2.0; MAX_OUT + 1];
-        let loud = [witness(&overflow)];
-        let defect = probe(&loud, SOURCE).check_expectations();
-        assert!(
-            defect
-                .as_ref()
-                .is_err_and(|reason| reason.contains("期望值")),
-            "{defect:?}"
-        );
-    }
-
-    #[test]
-    fn a_witness_that_computes_something_else_is_a_defect() {
-        let good = [witness(&[2.0])];
-        assert_eq!(probe(&good, SOURCE).check_witnesses(), Ok(()));
-        let wrong = [witness(&[3.0])];
-        let defect = probe(&wrong, SOURCE).check_witnesses();
-        assert!(
-            defect
-                .as_ref()
-                .is_err_and(|reason| reason.contains("不成立")),
-            "{defect:?}"
-        );
-    }
+    crate::test_cases!(execution {
+        a_self_contained_witness_is_accepted_but_a_quoted_include_is_not => || {
+            let good = [witness(&[2.0])];
+            assert_eq!(probe(&good, SOURCE).check_self_contained(), Ok(()));
+            assert_eq!(probe(&good, "#include <math.h>\n").check_self_contained(), Ok(()));
+            rejects(probe(&good, "#include \"preamble.h\"\n").check_self_contained(), "引号包含");
+        },
+        expectations_must_fit_the_reading_buf => || {
+            let good = [witness(&[2.0])];
+            assert_eq!(probe(&good, SOURCE).check_expectations(), Ok(()));
+            let overflow = [2.0; MAX_OUT + 1];
+            rejects(probe(&[witness(&overflow)], SOURCE).check_expectations(), "期望值");
+        },
+        a_witness_that_computes_something_else_is_a_defect => || {
+            let good = [witness(&[2.0])];
+            assert_eq!(probe(&good, SOURCE).check_witnesses(), Ok(()));
+            rejects(probe(&[witness(&[3.0])], SOURCE).check_witnesses(), "不成立");
+        },
+    }, |case: fn()| case());
 
     #[test]
     fn a_host_witness_is_compiled_and_compared() {

@@ -462,3 +462,260 @@ fn every_member_is_consumed_or_consumes_something() {
         );
     }
 }
+
+#[cfg(test)]
+mod discipline {
+    //! `crate::prop` 是唯一性质配置来源；台账必须与清单和源码双向一致。
+
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use crate::architecture::{rust_files, source_text, src_root, workspace, workspace_root};
+
+    const HARNESS: &str = "crates/testkit/src/prop.rs";
+
+    fn relative(path: &Path) -> String {
+        let root = workspace_root();
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        path.strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
+    fn scan_dirs(member: &str) -> Vec<PathBuf> {
+        let src = src_root(member);
+        let Some(manifest_dir) = src.parent() else {
+            return Vec::new();
+        };
+        ["src", "tests", "benches"]
+            .iter()
+            .map(|name| manifest_dir.join(name))
+            .filter(|dir| dir.is_dir())
+            .collect()
+    }
+
+    fn member_sources(member: &str) -> Vec<(String, Arc<str>)> {
+        scan_dirs(member)
+            .iter()
+            .flat_map(|dir| rust_files(dir).to_vec())
+            .filter_map(|path| source_text(&path).map(|text| (relative(&path), text)))
+            .collect()
+    }
+
+    fn manifest_text(member: &str) -> Option<Arc<str>> {
+        source_text(&src_root(member).parent()?.join("Cargo.toml"))
+    }
+
+    fn property_crates() -> Vec<String> {
+        workspace()
+            .0
+            .iter()
+            .filter(|member| manifest_text(member).is_some_and(|text| text.contains("proptest")))
+            .cloned()
+            .collect()
+    }
+
+    /// 剥掉字符串与注释，避免门禁命中自己的诊断文本。
+    fn code_of(line: &str) -> String {
+        let mut out = String::new();
+        let mut chars = line.chars();
+        let mut in_string = false;
+        let mut escaped = false;
+        while let Some(current) = chars.next() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if current == '\\' {
+                    escaped = true;
+                } else if current == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if current == '"' {
+                in_string = true;
+                continue;
+            }
+            if current == '/' && matches!(chars.clone().next(), Some('/') | Some('*')) {
+                break;
+            }
+            out.push(current);
+        }
+        out
+    }
+
+    fn constructs_a_config(line: &str) -> bool {
+        let code = code_of(line);
+        ["ProptestConfig {", "ProptestConfig{", "ProptestConfig::"]
+            .iter()
+            .any(|needle| code.contains(needle))
+    }
+
+    #[test]
+    fn no_crate_hand_rolls_its_own_proptest_config() {
+        let mut offenders = Vec::new();
+        for member in &workspace().0 {
+            for (path, text) in member_sources(member) {
+                if path == HARNESS {
+                    continue;
+                }
+                for (idx, line) in text.lines().enumerate() {
+                    if constructs_a_config(line) {
+                        offenders.push(format!("{path}:{}", idx + 1));
+                    }
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "自建 ProptestConfig：{offenders:?}");
+    }
+
+    #[test]
+    fn every_property_crate_depends_on_the_harness() {
+        let offenders: Vec<String> = property_crates()
+            .into_iter()
+            .filter(|member| !manifest_text(member).is_some_and(|text| text.contains("testkit")))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "声明 proptest 但没有 testkit：{offenders:?}"
+        );
+    }
+
+    #[test]
+    fn every_property_crate_reaches_the_shared_configuration() {
+        let offenders: Vec<String> = property_crates()
+            .into_iter()
+            .filter(|member| member != "testkit")
+            .filter(|member| {
+                !member_sources(member)
+                    .iter()
+                    .any(|(_, text)| text.contains("testkit::prop"))
+            })
+            .collect();
+        assert!(offenders.is_empty(), "未使用共享配置：{offenders:?}");
+    }
+
+    #[test]
+    fn the_scan_actually_sees_the_property_crates() {
+        let found = property_crates();
+        for expected in crate::prop::ledger::COVERED {
+            assert!(
+                found.iter().any(|member| member == expected),
+                "扫描漏了 {expected}"
+            );
+        }
+        let total: usize = found
+            .iter()
+            .map(|member| member_sources(member).len())
+            .sum();
+        assert!(total > 0, "扫描面为空");
+    }
+
+    #[test]
+    fn the_ledger_accounts_for_every_member_exactly_once() {
+        use crate::prop::ledger::{ABSENT, COVERED, PLANNED};
+        let mut accounted = BTreeSet::new();
+        let mut duplicates = Vec::new();
+        let entries = COVERED
+            .iter()
+            .copied()
+            .chain(PLANNED.iter().map(|(member, _)| *member))
+            .chain(
+                ABSENT
+                    .iter()
+                    .flat_map(|absence| absence.members.iter().copied()),
+            );
+        for member in entries {
+            if !accounted.insert(member) {
+                duplicates.push(member);
+            }
+        }
+        assert!(duplicates.is_empty(), "重复登记：{duplicates:?}");
+        let unaccounted: Vec<&str> = workspace()
+            .0
+            .iter()
+            .map(String::as_str)
+            .filter(|member| !accounted.contains(member))
+            .collect();
+        assert!(unaccounted.is_empty(), "未分类成员：{unaccounted:?}");
+        let ghosts: Vec<&str> = accounted
+            .iter()
+            .copied()
+            .filter(|member| !workspace().0.iter().any(|real| real == member))
+            .collect();
+        assert!(ghosts.is_empty(), "不存在的成员：{ghosts:?}");
+    }
+
+    #[test]
+    fn the_ledger_agrees_with_the_sources() {
+        use crate::prop::ledger::{ABSENT, COVERED, PLANNED};
+        let has_block = |member: &str| {
+            member_sources(member)
+                .iter()
+                .any(|(_, text)| text.contains("proptest!"))
+        };
+        let missing: Vec<&str> = COVERED
+            .iter()
+            .copied()
+            .filter(|member| !has_block(member))
+            .collect();
+        assert!(missing.is_empty(), "台账有覆盖但源码没有：{missing:?}");
+        let covered_but_absent: Vec<&str> = PLANNED
+            .iter()
+            .map(|(member, _)| *member)
+            .chain(
+                ABSENT
+                    .iter()
+                    .flat_map(|absence| absence.members.iter().copied()),
+            )
+            .filter(|member| has_block(member))
+            .collect();
+        assert!(
+            covered_but_absent.is_empty(),
+            "台账落后于源码：{covered_but_absent:?}"
+        );
+    }
+
+    #[test]
+    fn every_absence_reason_is_specific() {
+        let mut reasons = BTreeSet::new();
+        for absence in crate::prop::ledger::ABSENT {
+            let length = absence.reason.chars().count();
+            assert!(
+                !absence.members.is_empty(),
+                "空缺席规则：{}",
+                absence.reason
+            );
+            assert!(length >= 40, "缺席理由太短：{}", absence.reason);
+            assert!(
+                reasons.insert(absence.reason),
+                "重复缺席理由：{}",
+                absence.reason
+            );
+        }
+    }
+
+    #[test]
+    fn the_known_gaps_are_capped() {
+        use crate::prop::ledger::{PLANNED, PLANNED_MAX};
+        assert!(PLANNED.len() <= PLANNED_MAX, "缺口超过 {PLANNED_MAX}");
+        for (member, reason) in PLANNED {
+            assert!(reason.chars().count() >= 40, "{member} 的缺口说明太短");
+        }
+    }
+
+    #[test]
+    fn manifest_declarations_match_the_ledger() {
+        let mut declared = property_crates();
+        let mut covered: Vec<String> = crate::prop::ledger::COVERED
+            .iter()
+            .map(|member| (*member).to_string())
+            .collect();
+        declared.sort_unstable();
+        covered.sort_unstable();
+        assert_eq!(declared, covered, "清单声明与台账不一致");
+    }
+}

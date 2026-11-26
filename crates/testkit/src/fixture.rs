@@ -148,71 +148,57 @@ pub fn sample(len: usize, salt: u32) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn rng_is_deterministic_and_bounded() {
-        let mut left = Rng::new(1234);
-        let mut right = Rng::new(1234);
-        for _ in 0..16 {
-            let value = left.below(10);
-            assert_eq!(value, right.below(10), "同种子序列一致");
-            assert!(value < 10, "结果落在界内");
-        }
-        assert_eq!(Rng::new(7).below(1), 0, "bound=1 恒为 0");
-        assert_eq!(Rng::new(7).below(0), 0, "bound=0 不产生除零");
-    }
-
-    #[test]
-    fn rng_value_stays_away_from_zero_and_is_signable() {
-        let mut rng = Rng::new(42);
-        for _ in 0..16 {
-            let value = rng.value();
-            assert!(value.abs() >= 0.5 && value.abs() <= 2.0);
-        }
-    }
-
-    #[test]
-    fn rng_next_f32_is_in_unit_interval() {
-        let mut rng = Rng::new(7);
-        for _ in 0..16 {
-            let value = rng.next_f32();
-            assert!((0.0..1.0).contains(&value));
-        }
-    }
-
-    #[test]
-    fn rng_signed_unit_covers_both_signs_inside_the_band() {
-        let mut rng = Rng::new(9);
-        let draws: Vec<f32> = (0..64).map(|_| rng.signed_unit()).collect();
-        assert!(draws.iter().all(|value| (-1.0..1.0).contains(value)));
-        assert!(draws.iter().any(|value| *value < 0.0));
-        assert!(draws.iter().any(|value| *value >= 0.0));
-    }
-
-    #[test]
-    fn sample_is_reproducible_and_inside_the_band() {
-        assert_eq!(sample(9, 3), sample(9, 3), "同 (len, salt) 必须同一批值");
-        assert_ne!(sample(9, 3), sample(9, 4), "salt 必须真的参与计算");
-        assert!(
-            sample(64, 1)
-                .iter()
-                .all(|value| (-1.0..1.0).contains(value))
-        );
-        assert_eq!(sample(0, 7), Vec::<f32>::new(), "零长批是空切片");
-    }
-
-    #[test]
-    fn sample_with_shares_the_base_prng_and_supports_custom_mappings() {
-        assert_eq!(
-            sample(16, 5),
-            sample_with(16, 5, |word| ((word >> 8) % 2048) as f32 / 1024.0 - 1.0)
-        );
-        let scaled = sample_with(8, 1, |word| ((word >> 8) as f32) / 256.0 - 32.0);
-        assert_eq!(
-            scaled,
-            sample_with(8, 1, |word| ((word >> 8) as f32) / 256.0 - 32.0)
-        );
-        let as_i8 = sample_with(8, 1, |word| ((word % 251) as i32 - 125) as i8);
-        assert!(as_i8.iter().all(|value| (-125..=125).contains(value)));
-        assert_eq!(sample_with::<f32>(0, 1, |_| 0.0), Vec::<f32>::new());
-    }
+    crate::test_cases!(determinism {
+        rng_is_deterministic_and_bounded => || {
+            let mut left = Rng::new(1234);
+            let mut right = Rng::new(1234);
+            // PRNG 状态必须串行推进，保留状态循环。
+            for _ in 0..16 {
+                let value = left.below(10);
+                assert_eq!(value, right.below(10));
+                assert!(value < 10);
+            }
+            assert_eq!(Rng::new(7).below(1), 0);
+            assert_eq!(Rng::new(7).below(0), 0);
+        },
+        rng_value_stays_away_from_zero_and_is_signable => || {
+            let mut rng = Rng::new(42);
+            // PRNG 状态必须串行推进，保留状态循环。
+            for _ in 0..16 {
+                let value = rng.value();
+                assert!(value.abs() >= 0.5 && value.abs() <= 2.0);
+            }
+        },
+        rng_next_f32_is_in_unit_interval => || {
+            let mut rng = Rng::new(7);
+            // PRNG 状态必须串行推进，保留状态循环。
+            for _ in 0..16 {
+                assert!((0.0..1.0).contains(&rng.next_f32()));
+            }
+        },
+        rng_signed_unit_covers_both_signs_inside_the_band => || {
+            let mut rng = Rng::new(9);
+            let draws: Vec<f32> = (0..64).map(|_| rng.signed_unit()).collect();
+            assert!(draws.iter().all(|value| (-1.0..1.0).contains(value)));
+            assert!(draws.iter().any(|value| *value < 0.0));
+            assert!(draws.iter().any(|value| *value >= 0.0));
+        },
+        sample_is_reproducible_and_inside_the_band => || {
+            assert_eq!(sample(9, 3), sample(9, 3));
+            assert_ne!(sample(9, 3), sample(9, 4));
+            assert!(sample(64, 1).iter().all(|value| (-1.0..1.0).contains(value)));
+            assert_eq!(sample(0, 7), Vec::<f32>::new());
+        },
+        sample_with_shares_the_base_prng_and_supports_custom_mappings => || {
+            assert_eq!(
+                sample(16, 5),
+                sample_with(16, 5, |word| ((word >> 8) % 2048) as f32 / 1024.0 - 1.0)
+            );
+            let map = |word| ((word >> 8) as f32) / 256.0 - 32.0;
+            assert_eq!(sample_with(8, 1, map), sample_with(8, 1, map));
+            let as_i8 = sample_with(8, 1, |word| ((word % 251) as i32 - 125) as i8);
+            assert!(as_i8.iter().all(|value| (-125..=125).contains(value)));
+            assert_eq!(sample_with::<f32>(0, 1, |_| 0.0), Vec::<f32>::new());
+        },
+    }, |case: fn()| case());
 }

@@ -14,29 +14,29 @@ pub(crate) const MIN_SOURCES: usize = 70;
 pub(crate) type Hit = (String, PathBuf, usize, String);
 
 /// `crates/<crate>/src/**/*.rs` 下的全部源文件。
-pub(crate) fn sources() -> Vec<(String, PathBuf)> {
-    // `testkit` 自己不在扫描集里：它的 `src/` 全部是检验器自身的代码（每个文件都是
-    // `#[cfg(test)] mod tests`），不是被检验的生产词汇表；扫进来只会让判据命中自己的谓词文本。
-    let crates = root().join("crates");
-    let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(&crates) else {
-        return out;
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.retain(|name| name != "testkit");
-    names.sort();
-    for name in names {
-        let mut files = rust_files(&crates.join(&name).join("src")).to_vec();
-        files.sort();
-        for file in files {
-            out.push((name.clone(), file));
+pub(crate) fn sources() -> &'static [(String, PathBuf)] {
+    static CACHE: OnceLock<Vec<(String, PathBuf)>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        // 排除检验器自身，避免谓词文本命中自己的规则。
+        let crates = root().join("crates");
+        let mut out = Vec::new();
+        let Ok(entries) = fs::read_dir(&crates) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "testkit")
+            .collect();
+        names.sort_unstable();
+        for name in names {
+            let mut files = rust_files(&crates.join(&name).join("src")).to_vec();
+            files.sort_unstable();
+            out.extend(files.into_iter().map(|file| (name.clone(), file)));
         }
-    }
-    out
+        out
+    })
 }
 
 /// 找到算子模块的实体文件：先按 `pub use` 别名换成实体名，再在骨架旁的嵌套目录里找实体。
@@ -47,11 +47,15 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
 /// 内核机制与运行期的 `src` 根。机制（协商 / 拼接 / emit）在 `cutile`，执行面
 /// （编译 / doctor / bench / verify）并进 `shard` 后，契约文件会在两家之间搬；判据守的是结构契约
 /// （缝在、注册表在、注入点在），不是文件坐标，所以按两家探测，谁家有就用谁家的。
-fn cutile_path(relative: &str) -> PathBuf {
-    let candidates: Vec<PathBuf> = ["cutile", "shard"]
+fn require_fragments(text: &str, expected: &[(&str, &str)]) {
+    expected
         .iter()
-        .map(|name| root().join("crates").join(name).join("src").join(relative))
-        .collect();
+        .for_each(|(needle, why)| assert!(text.contains(needle), "{why}"));
+}
+
+fn cutile_path(relative: &str) -> PathBuf {
+    let candidates =
+        ["cutile", "shard"].map(|name| root().join("crates").join(name).join("src").join(relative));
     candidates
         .iter()
         .find(|path| path.exists())
@@ -78,11 +82,11 @@ fn family() -> &'static BTreeSet<String> {
     static CACHE: OnceLock<BTreeSet<String>> = OnceLock::new();
     CACHE.get_or_init(|| {
         sources()
-            .into_iter()
+            .iter()
             .filter(|(_, file)| {
                 source_text(file).is_some_and(|text| text.contains(MODEL_ANNOTATION))
             })
-            .map(|(name, _)| name)
+            .map(|(name, _)| name.clone())
             .collect()
     })
 }
@@ -93,10 +97,8 @@ const MODEL_ANNOTATION: &str = "#[annotation::model(";
 
 /// 算子家族的 `src` 根。算子实体可能散在多家，路径探测逐家去试；按名字排序只为稳定。
 fn op_roots() -> Vec<PathBuf> {
-    let mut names: Vec<&String> = family().iter().collect();
-    names.sort();
-    names
-        .into_iter()
+    family()
+        .iter()
         .map(|name| root().join("crates").join(name).join("src"))
         .filter(|path| path.is_dir())
         .collect()
@@ -167,10 +169,10 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         return Some(direct);
     }
     for (crate_name, file) in sources() {
-        if !in_op_family(&crate_name) {
+        if !in_op_family(crate_name) {
             continue;
         }
-        let Some(text) = source_text(&file) else {
+        let Some(text) = source_text(file) else {
             continue;
         };
         if !text.contains(&format!("pub mod {module}")) {
@@ -179,7 +181,7 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         // 聚合布局：骨架文件 `gemv.rs` 声明 `pub mod f32;`，实体在骨架旁的
         // `gemv/f32.rs`——注册表要的注解读的是实体，不是只做声明的骨架。
         let body = file.with_extension("").join(format!("{module}.rs"));
-        return Some(if body.exists() { body } else { file });
+        return Some(if body.exists() { body } else { file.clone() });
     }
     // 候选按路径段数从少到多试：`gemm_i8` 既是 `gemm::{i8 as gemm_i8}` 的算子实体，也是
     // `fast::i8::gemm_i8` 这个纯函数的重导出，短的才是注册表要的那份。
@@ -205,13 +207,13 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
         let mut out: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for (crate_name, file) in sources() {
-            if !in_op_family(&crate_name) {
+            if !in_op_family(crate_name) {
                 continue;
             }
-            let Some(text) = source_text(&file) else {
+            let Some(text) = source_text(file) else {
                 continue;
             };
-            let owner = module_path_of(&file);
+            let owner = module_path_of(file);
             for statement in use_statements(&text) {
                 for (source, alias) in use_tree(&statement, &owner) {
                     let candidates = out.entry(alias).or_default();
@@ -239,10 +241,10 @@ fn module_idx() -> &'static std::collections::BTreeMap<String, PathBuf> {
     IDX.get_or_init(|| {
         let mut out = std::collections::BTreeMap::new();
         for (crate_name, file) in sources() {
-            if !in_op_family(&crate_name) || file.file_stem().is_some_and(|stem| stem != "lib") {
+            if !in_op_family(crate_name) || file.file_stem().is_some_and(|stem| stem != "lib") {
                 continue;
             }
-            walk_declarations(&file, &[], &mut out);
+            walk_declarations(file, &[], &mut out);
         }
 
         out
@@ -541,14 +543,14 @@ fn ident(word: &str) -> &str {
 pub(crate) fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
     let mut out = Vec::new();
     for (name, file) in sources() {
-        let Some(text) = source_text(&file) else {
+        let Some(text) = source_text(file) else {
             continue;
         };
         for (idx, line) in text.lines().enumerate() {
             if predicate(line) {
                 out.push((
                     name.clone(),
-                    file.strip_prefix(root()).unwrap_or(&file).to_path_buf(),
+                    file.strip_prefix(root()).unwrap_or(file).to_path_buf(),
                     idx + 1,
                     line.trim().to_string(),
                 ));
@@ -696,42 +698,31 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
 /// 这一种，且只发生在装配层（L7），不在机制层。
 #[test]
 pub(crate) fn every_device_front_end_is_entered() {
-    let device = cutile_path("device.rs");
-    let text = fs::read_to_string(&device).expect("`device.rs` 必须可读");
-    assert!(
-        text.contains("static REGISTRY"),
-        "后端注册表 `static REGISTRY` 必须存在"
+    let text = fs::read_to_string(cutile_path("device.rs")).expect("`device.rs` 必须可读");
+    require_fragments(
+        &text,
+        &[
+            ("static REGISTRY", "后端注册表必须存在"),
+            ("&CBackend", "注册表必须种子内置 host C 后端"),
+            ("pub(crate) fn register", "注册表必须有 L7 注入点"),
+        ],
     );
-    assert!(
-        text.contains("&CBackend"),
-        "注册表必须种子内置 host C 参考后端"
-    );
-    assert!(
-        text.contains("pub(crate) fn register"),
-        "注册表必须有注入点 `register`（L7 装配 Metal/CUDA）"
-    );
-
-    let backend = cutile_path("backend.rs");
-    let text = fs::read_to_string(&backend).expect("`backend.rs` 必须可读");
-    assert!(text.contains("pub trait Codegen"), "Codegen 缝必须存在");
-    assert!(text.contains("fn emit"), "Codegen 必须要求语言身份 `emit`");
-    assert!(
-        text.contains("fn program"),
-        "Codegen 必须要求程序生成 `program`"
-    );
-    assert!(text.contains("pub trait Driver"), "Driver 缝必须存在");
-    assert!(
-        text.contains("fn available"),
-        "Driver 必须要求探测 `available`"
-    );
-    assert!(text.contains("fn run"), "Driver 必须要求执行回读 `run`");
-    assert!(
-        text.contains("fn toolchain"),
-        "Driver 必须要求工具链身份 `toolchain`"
-    );
-    assert!(
-        text.contains("pub trait Backend: Codegen + Driver"),
-        "Backend 必须是 Codegen + Driver 的并集"
+    let text = fs::read_to_string(cutile_path("backend.rs")).expect("`backend.rs` 必须可读");
+    require_fragments(
+        &text,
+        &[
+            ("pub trait Codegen", "Codegen 缝必须存在"),
+            ("fn emit", "Codegen 必须要求语言身份"),
+            ("fn program", "Codegen 必须要求程序生成"),
+            ("pub trait Driver", "Driver 缝必须存在"),
+            ("fn available", "Driver 必须要求可用性探测"),
+            ("fn run", "Driver 必须要求执行回读"),
+            ("fn toolchain", "Driver 必须要求工具链身份"),
+            (
+                "pub trait Backend: Codegen + Driver",
+                "Backend 必须组合两个能力缝",
+            ),
+        ],
     );
 }
 

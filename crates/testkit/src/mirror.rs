@@ -48,10 +48,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
     // 不是目录名前缀——前缀判断在改名当刻静默归零。
     let producers = dependents("annotation");
     for (crate_name, file) in sources() {
-        if !producers.contains(&crate_name) {
+        if !producers.contains(crate_name) {
             continue;
         }
-        let Some(text) = source_text(&file) else {
+        let Some(text) = source_text(file) else {
             continue;
         };
         for line in text.lines() {
@@ -169,10 +169,10 @@ fn model_macros() -> std::collections::BTreeSet<String> {
 fn macro_bodies() -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     for (crate_name, file) in sources() {
-        if !in_op_family(&crate_name) {
+        if !in_op_family(crate_name) {
             continue;
         }
-        let Some(text) = source_text(&file) else {
+        let Some(text) = source_text(file) else {
             continue;
         };
         let mut current: Option<(String, String)> = None;

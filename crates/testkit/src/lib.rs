@@ -106,13 +106,14 @@ macro_rules! cases {
 /// ```
 #[macro_export]
 macro_rules! test_cases {
-    ($module:ident { $($name:ident => $input:expr),+ $(,)? }, $run:expr) => {
+    ($module:ident { $($(#[$attr:meta])* $name:ident => $input:expr),+ $(,)? }, $run:expr) => {
         #[cfg(test)]
         mod $module {
             // 判据闭包常要调用外层的装配 helper；`use super::*` 把它们带进生成模块。
             #[allow(unused_imports)]
             use super::*;
             $(
+                $(#[$attr])*
                 #[test]
                 fn $name() {
                     let run = $run;
@@ -165,6 +166,11 @@ mod cases {
     }, |input: i32| {
         assert_eq!(triple(input), input * 3);
     });
+
+    crate::test_cases!(attributes {
+        #[should_panic(expected = "注解生效")]
+        forwards_case_attributes => || assert_eq!(1, 2, "注解生效"),
+    }, |case: fn()| case());
 }
 
 // 工作区级的跨层对拍与契约门禁。它们只靠 `dev-dependencies` 里的被测层编译，所以每条都在
@@ -183,14 +189,8 @@ mod e2e;
 mod mirror;
 #[cfg(test)]
 mod ownership;
-// 性质测试装置的自测：环境变量收口、生成器值域、精确相等断言的边界。
-#[cfg(test)]
-#[path = "../tests/prop_config.rs"]
-mod prop_config;
-// 性质测试的工作区纪律：任何 crate 都不得自建 `ProptestConfig`（唯一来源是 `prop`）。
-#[cfg(test)]
-#[path = "../tests/prop_discipline.rs"]
-mod prop_discipline;
+// 性质测试装置的自测与生成器边界归入 `prop::configuration`。
+// 性质测试的工作区纪律与架构事实共用静态扫描缓存，归入 `architecture::discipline`。
 // L3 合成律的跨层对拍已并入 `e2e`：真实权重、网络级误差界与无损容器共享一组夹具。
 
 pub use compare::{

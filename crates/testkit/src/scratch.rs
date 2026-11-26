@@ -65,41 +65,34 @@ impl Drop for ScratchDir {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_same_tag_reuses_one_directory() {
-        let first = scratch_dir("a");
-        let second = scratch_dir("a");
-        assert!(first.is_dir());
-        assert_eq!(first, second, "同标签同进程应复用同一目录");
-        assert_ne!(first, scratch_dir("b"), "不同标签必须各自一个目录");
-        let _ = std::fs::remove_dir_all(&first);
-        let _ = std::fs::remove_dir_all(scratch_dir("b"));
-    }
-
-    #[test]
-    fn scratch_clean_wipes_prior_content() {
-        let dir = scratch_clean("clean");
-        std::fs::write(dir.join("leftover.txt"), "x").expect("写入残留");
-        assert!(dir.join("leftover.txt").exists());
-        let again = scratch_clean("clean");
-        assert!(again.is_dir());
-        assert!(
-            !again.join("leftover.txt").exists(),
-            "第二次取同标签必须先清空残留"
-        );
-        let _ = std::fs::remove_dir_all(&again);
-    }
-
-    #[test]
-    fn scratch_dir_raii_builds_joins_and_cleans_up_on_drop() {
-        let path = {
-            let dir = ScratchDir::new("raii");
-            assert!(dir.path().is_dir(), "落地即建目录");
-            let child = dir.join("nested.txt");
-            std::fs::write(&child, "x").expect("写入子文件");
-            assert!(child.exists());
-            dir.path().to_path_buf()
-        };
-        assert!(!path.exists(), "离开作用域必须自动清理");
-    }
+    crate::test_cases!(directories {
+        the_same_tag_reuses_one_directory => || {
+            let first = scratch_dir("a");
+            assert!(first.is_dir());
+            assert_eq!(first, scratch_dir("a"));
+            assert_ne!(first, scratch_dir("b"));
+            let _ = std::fs::remove_dir_all(&first);
+            let _ = std::fs::remove_dir_all(scratch_dir("b"));
+        },
+        scratch_clean_wipes_prior_content => || {
+            let dir = scratch_clean("clean");
+            std::fs::write(dir.join("leftover.txt"), "x").expect("写入残留");
+            assert!(dir.join("leftover.txt").exists());
+            let again = scratch_clean("clean");
+            assert!(again.is_dir());
+            assert!(!again.join("leftover.txt").exists());
+            let _ = std::fs::remove_dir_all(&again);
+        },
+        scratch_dir_raii_builds_joins_and_cleans_up_on_drop => || {
+            let path = {
+                let dir = ScratchDir::new("raii");
+                assert!(dir.path().is_dir());
+                let child = dir.join("nested.txt");
+                std::fs::write(&child, "x").expect("写入子文件");
+                assert!(child.exists());
+                dir.path().to_path_buf()
+            };
+            assert!(!path.exists());
+        },
+    }, |case: fn()| case());
 }

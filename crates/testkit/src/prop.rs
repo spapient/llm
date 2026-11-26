@@ -252,3 +252,113 @@ pub mod ledger {
         },
     ];
 }
+
+#[cfg(test)]
+mod configuration {
+    //! 性质装置自测：环境变量收口、生成器值域、精确相等断言的边界。
+
+    use crate::prop::{self, DEFAULT_CASES, DEFAULT_SEED, MAX_SHRINK_ITERS};
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
+    crate::test_cases!(resolvers {
+        absent_or_blank_cases_fall_back_to_the_default => || {
+            for raw in [None, Some(""), Some("   ")] {
+                assert_eq!(prop::cases_from(raw), DEFAULT_CASES);
+            }
+        },
+        a_positive_case_count_is_honoured => || {
+            assert_eq!(prop::cases_from(Some("512")), 512);
+            assert_eq!(prop::cases_from(Some(" 64 ")), 64);
+        },
+        #[should_panic(expected = "PROPTEST_CASES 必须是正整数")]
+        zero_cases_is_rejected_instead_of_silently_passing => || {
+            let _ = prop::cases_from(Some("0"));
+        },
+        #[should_panic(expected = "PROPTEST_CASES 必须是正整数")]
+        a_malformed_case_count_is_rejected_instead_of_falling_back => || {
+            let _ = prop::cases_from(Some("many"));
+        },
+        absent_seed_falls_back_to_the_fixed_default => || {
+            assert_eq!(prop::seed_from(None), DEFAULT_SEED);
+            assert_eq!(prop::seed_from(Some("42")), 42);
+        },
+        #[should_panic(expected = "PROPTEST_RNG_SEED 必须是 u64")]
+        a_malformed_seed_is_rejected => || {
+            let _ = prop::seed_from(Some("0x2a"));
+        },
+        the_shared_config_is_wired_to_both_resolvers => || {
+            let config = prop::config();
+            assert_eq!(config.cases, prop::cases());
+            assert_eq!(config.max_shrink_iters, MAX_SHRINK_ITERS);
+            assert_eq!(config.rng_seed, RngSeed::Fixed(prop::seed()));
+        },
+    }, |case: fn()| case());
+
+    proptest! {
+        #![proptest_config(prop::config())]
+
+        #[test]
+        fn the_bounded_generators_stay_finite_and_in_range(value in prop::finite(), wide in prop::wide()) {
+            prop_assert!(value.is_finite() && value.abs() < 1.0, "{value} 越出 (−1, 1)");
+            prop_assert!(wide.is_finite() && wide != 0.0, "{wide} 不是非零有限值");
+        }
+
+        #[test]
+        fn the_unit_generator_covers_the_closed_unit_interval(value in prop::unit()) {
+            prop_assert!((0.0..=1.0).contains(&value), "{value} 越出 [0, 1]");
+        }
+
+        #[test]
+        fn the_positive_generator_is_strictly_positive_and_log_symmetric(value in prop::positive()) {
+            prop_assert!(value > 0.0 && value.is_finite(), "{value} 不是严格正有限值");
+            prop_assert!((-4.0f32).exp() <= value && value <= 4.0f32.exp(), "{value} 越出 e^±4");
+        }
+
+        #[test]
+        fn the_wide_generator_reaches_both_ends_of_the_f32_range(exponent in -30.0f32..=30.0) {
+            prop_assert!(10.0f32.powf(exponent).is_finite(), "10^{exponent} 溢出");
+        }
+    }
+
+    crate::test_cases!(equality {
+        exact_equality_treats_signed_zeroes_as_equal => || {
+            prop::assert_exact("±0", &[-0.0, 0.0, 1.0], &[0.0, -0.0, 1.0]);
+        },
+        #[should_panic(expected = "第 1 项")]
+        exact_equality_reports_the_first_mismatch => || {
+            prop::assert_exact("反例", &[1.0, 2.0], &[1.0, 3.0]);
+        },
+        #[should_panic(expected = "长度 2 ≠ 3")]
+        exact_equality_rejects_length_mismatch_before_comparing => || {
+            prop::assert_exact("长度", &[1.0, 2.0], &[1.0, 2.0, 3.0]);
+        },
+    }, |case: fn()| case());
+
+    proptest! {
+        #![proptest_config(prop::config())]
+
+        #[test]
+        fn squash_is_total_and_strictly_bounded(raw in any::<f32>(), limit in prop::positive()) {
+            let squashed = prop::squash(limit, raw);
+            prop_assert!(squashed.is_finite(), "{raw} → {squashed} 不是有限值");
+            prop_assert!(squashed.abs() < limit, "{raw} → {squashed} 越出 ±{limit}");
+        }
+
+        #[test]
+        fn squash_is_monotone_and_odd(left in prop::finite(), right in prop::finite()) {
+            prop_assume!(left <= right);
+            prop_assert!(prop::squash(1.0, left) <= prop::squash(1.0, right));
+            prop_assert_eq!(prop::squash(1.0, -left), -prop::squash(1.0, left));
+        }
+    }
+
+    #[test]
+    fn squash_saturates_strictly_below_the_limit_on_both_sides() {
+        for limit in [1.0f32, 4.0] {
+            assert!(prop::squash(limit, f32::MAX) < limit);
+            assert!(prop::squash(limit, f32::MIN) > -limit);
+            assert_eq!(prop::squash(limit, 0.0), 0.0);
+        }
+    }
+}
