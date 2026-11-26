@@ -617,6 +617,34 @@ mod ratchet;
 /// 无声消失，用例数不能。族少一个、对拍被掏空一半，这里就红。
 const ARCHITECTURE_FAMILY_CASES: usize = 248;
 
+/// 统计源码中显式与宏生成的独立用例；宏体内只有顶层函数是用例，嵌套闭包不计。
+fn conformance_cases(text: &str) -> usize {
+    let mut cases = text.matches("#[test]").count();
+    let mut macro_indent = None;
+    let mut in_function = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        let Some(expected) = macro_indent else {
+            if trimmed.starts_with("testkit::test_cases!") {
+                macro_indent = Some(indent);
+            }
+            continue;
+        };
+        if indent == expected && !in_function && trimmed.starts_with("fn ") {
+            cases += 1;
+            in_function = !trimmed.ends_with('}');
+        } else if indent == expected && trimmed.starts_with('}') {
+            if in_function {
+                in_function = false;
+            } else {
+                macro_indent = None;
+            }
+        }
+    }
+    cases
+}
+
 #[test]
 fn every_architecture_family_keeps_its_conformance_suite() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -625,14 +653,14 @@ fn every_architecture_family_keeps_its_conformance_suite() {
         .expect("workspace root");
     let dir = root.join("crates/algorithm");
     let mut suites = Vec::new();
-    walk(&dir.join("tests"), &mut suites, "rs", false, &|_| true);
+    walk(&dir, &mut suites, "rs", false, &|_| true);
 
     let mut cases = 0;
     let mut orphans = Vec::new();
     for suite in &suites {
         let text = std::fs::read_to_string(suite).expect("对拍文件可读");
-        cases += text.matches("#[test]").count();
-        if !mounted(&dir, suite) {
+        cases += conformance_cases(&text);
+        if suite.starts_with(dir.join("tests")) && !mounted(&dir, suite) {
             orphans.push(suite.display().to_string());
         }
     }

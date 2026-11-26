@@ -38,6 +38,7 @@
 /// 全 crate 的“非法输入”构造点转发自 L1 [`wire`]：判据与上下文标注各只有一处实现。
 pub(crate) use storage::bad;
 
+// 权重格式的闭集枚举与字段编解码声明宏：新格式槽位只填声明，不重写读写骨架。
 // —— 闭集枚举宏：全 crate 的"码位 ↔ 变体 ↔ 短名"单一生成点；文本作用域须先于各使用模块 ——
 //
 // 线上码位稳定是容器格式的一部分，因此每个变体的码位只写一次——枚举本身与它的
@@ -55,7 +56,7 @@ pub(crate) use storage::bad;
 ///
 /// 每个变体带 `= 码位`；`from_code` 按判别值反向解析，未知码返回 [`crate::bad`] 的
 /// `Invalid` 错误。变体上的文档注释原样保留。首 token 选 `@named` / `@coded` /
-/// `@coded_unsupported` 可换形态，见模块文档。
+/// `@coded_unsupported` 可换形态，见上方形态选择注释。
 macro_rules! closed_enum {
     // 带短名：枚举 + from_code + as_str。
     (
@@ -421,42 +422,6 @@ pub mod patch {
 }
 
 #[cfg(test)]
-mod testutil {
-    //! 测试共享夹具：f32 段构造与归档写盘，mode/patch 等模块的测试共用同一份。
-    use crate::Wire;
-    use crate::seg::Segment;
-    use crate::writer::Writer;
-
-    /// 由 f32 值构造一个单维 F32 段。
-    pub(crate) fn f32_segment(name: &str, vals: &[f32]) -> Segment {
-        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        Segment::new(name, Wire::F32, vec![vals.len() as u64], None, bytes).expect("段")
-    }
-
-    /// 由 f32 值构造一个二维 F32 段：五轴选码只认二维稠密权重，形状因此必须给全。
-    pub(crate) fn f32_matrix(name: &str, vals: &[f32], (m, n): (usize, usize)) -> Segment {
-        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        Segment::new(name, Wire::F32, vec![m as u64, n as u64], None, bytes).expect("段")
-    }
-
-    /// 把段依次写进归档，返回对齐到 `2^6` 的字节。
-    pub(crate) fn archive(segments: Vec<Segment>) -> Vec<u8> {
-        let mut w = Writer::new();
-        for seg in segments {
-            w.push(seg).expect("push");
-        }
-        w.finish(6).expect("字节")
-    }
-
-    /// 读取本机 torch `.bin` 样本；样本缺失返回 `None`，测试跳过而不是伪造字节。
-    pub(crate) fn real_bin_bytes() -> Option<Vec<u8>> {
-        std::fs::read("/tmp/pt/model.bin")
-            .ok()
-            .or_else(|| testkit::skip_none("weights 样本缺失"))
-    }
-}
-
-#[cfg(test)]
 #[path = "../tests/gguf_fixture.rs"]
 pub(crate) mod gguf_fixture;
 
@@ -492,3 +457,39 @@ pub use safetensors::MmapSource;
 #[cfg(test)]
 #[path = "../tests/lib.rs"]
 mod tests;
+
+#[cfg(test)]
+mod testutil {
+    //! 测试共享夹具：f32 段构造与归档写盘，mode/patch 等模块的测试共用同一份。
+    use crate::Wire;
+    use crate::seg::Segment;
+    use crate::writer::Writer;
+
+    /// 由 f32 值构造一个单维 F32 段。
+    pub(crate) fn f32_segment(name: &str, vals: &[f32]) -> Segment {
+        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        Segment::new(name, Wire::F32, vec![vals.len() as u64], None, bytes).expect("段")
+    }
+
+    /// 由 f32 值构造一个二维 F32 段：五轴选码只认二维稠密权重，形状因此必须给全。
+    pub(crate) fn f32_matrix(name: &str, vals: &[f32], (m, n): (usize, usize)) -> Segment {
+        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        Segment::new(name, Wire::F32, vec![m as u64, n as u64], None, bytes).expect("段")
+    }
+
+    /// 把段依次写进归档，返回对齐到 `2^6` 的字节。
+    pub(crate) fn archive(segments: Vec<Segment>) -> Vec<u8> {
+        let mut w = Writer::new();
+        for seg in segments {
+            w.push(seg).expect("push");
+        }
+        w.finish(6).expect("字节")
+    }
+
+    /// 读取本机 torch `.bin` 样本；样本缺失返回 `None`，测试跳过而不是伪造字节。
+    pub(crate) fn real_bin_bytes() -> Option<Vec<u8>> {
+        std::fs::read("/tmp/pt/model.bin")
+            .ok()
+            .or_else(|| testkit::skip_none("weights 样本缺失"))
+    }
+}

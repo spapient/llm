@@ -1,6 +1,5 @@
 //! DeepSeek MLA 的潜在 KV（§5.8.1）：每 token 每层只缓存 `c^KV` 与解耦 RoPE 键 `k^R`。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

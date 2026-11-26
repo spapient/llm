@@ -5,7 +5,7 @@
 
 use diagnostic::Result;
 
-use crate::element::Element;
+use crate::Element;
 use crate::tensor::{Order, Rank, Slice, accumulate, assemble, product};
 use crate::{DynTensor, Owned, Store, StoreMut, Tensor, View, ViewMut, invalid};
 

@@ -42,6 +42,7 @@ fn phase_latency_rejects_empty_nonfinite_or_regressed() {
 fn slo_hit_rate_and_throughput() {
     assert!((slo_hit_rate(3, 4) - 0.75).abs() < 1e-9);
     assert_eq!(slo_hit_rate(2, 0), 0.0);
+    assert_eq!(slo_hit_rate(10, 8), 1.0);
     assert!((tokens_per_s(1, 1e9) - 1.0).abs() < 1e-9);
     assert_eq!(tokens_per_s(4, 0.0), 0.0);
 }
@@ -83,6 +84,8 @@ fn grid_aligned_and_boundary_points() {
     assert_eq!(boundary_points(16, 40), vec![15, 31]);
     assert!(aligned_points(0, 40).is_empty());
     assert!(boundary_points(0, 40).is_empty());
+    assert!(aligned_points(16, 15).is_empty());
+    assert_eq!(boundary_points(16, 15), vec![15]);
 }
 
 fn alloc_profile_keeps_counts() {

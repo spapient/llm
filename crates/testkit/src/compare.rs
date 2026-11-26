@@ -475,6 +475,53 @@ pub(crate) fn within_ratio(got: &[f32], want: &[f32], tolerance: f64) -> bool {
     rel_err(got, want).ratio() <= tolerance
 }
 
+// ---- 标量参考数学 -----------------------------------------------------------
+
+/// 两条同长向量的点积：`Σ aᵢ·bᵢ`。
+///
+/// # Panics
+///
+/// `left.len() != right.len()` 时 panic；长度不符是测试用例自身的错误。
+#[must_use]
+pub fn dot<T: Float>(left: &[T], right: &[T]) -> T {
+    assert_eq!(
+        left.len(),
+        right.len(),
+        "点积两侧长度不同（left {}，right {}）",
+        left.len(),
+        right.len()
+    );
+    left.iter()
+        .zip(right)
+        .fold(T::zero(), |acc, (a, b)| acc + *a * *b)
+}
+
+/// 一维信号的均值；空切片按参考约定返回零。
+#[must_use]
+pub fn mean<T: Float>(values: &[T]) -> T {
+    if values.is_empty() {
+        return T::zero();
+    }
+    values.iter().fold(T::zero(), |acc, v| acc + *v) / len_scalar(values.len())
+}
+
+/// 一维信号相对给定均值的方差；空切片按参考约定返回零。
+#[must_use]
+pub fn variance<T: Float>(values: &[T], mean: T) -> T {
+    if values.is_empty() {
+        return T::zero();
+    }
+    values.iter().fold(T::zero(), |acc, v| {
+        let d = *v - mean;
+        acc + d * d
+    }) / len_scalar(values.len())
+}
+
+/// 浮点类型无法表示长度时以 NaN 暴露异常，而不是 panic 或静默给出零分母。
+fn len_scalar<T: Float>(len: usize) -> T {
+    T::from(len).unwrap_or_else(T::nan)
+}
+
 #[cfg(test)]
 mod compare_tests {
     //! 对拍判据自测：逐元素容差、方向、整批/单位分母与生产参考实现交叉对拍。
@@ -786,53 +833,6 @@ mod compare_tests {
             "GEMM 双门",
         );
     }
-}
-
-// ---- 标量参考数学 -----------------------------------------------------------
-
-/// 两条同长向量的点积：`Σ aᵢ·bᵢ`。
-///
-/// # Panics
-///
-/// `left.len() != right.len()` 时 panic；长度不符是测试用例自身的错误。
-#[must_use]
-pub fn dot<T: Float>(left: &[T], right: &[T]) -> T {
-    assert_eq!(
-        left.len(),
-        right.len(),
-        "点积两侧长度不同（left {}，right {}）",
-        left.len(),
-        right.len()
-    );
-    left.iter()
-        .zip(right)
-        .fold(T::zero(), |acc, (a, b)| acc + *a * *b)
-}
-
-/// 一维信号的均值；空切片按参考约定返回零。
-#[must_use]
-pub fn mean<T: Float>(values: &[T]) -> T {
-    if values.is_empty() {
-        return T::zero();
-    }
-    values.iter().fold(T::zero(), |acc, v| acc + *v) / len_scalar(values.len())
-}
-
-/// 一维信号相对给定均值的方差；空切片按参考约定返回零。
-#[must_use]
-pub fn variance<T: Float>(values: &[T], mean: T) -> T {
-    if values.is_empty() {
-        return T::zero();
-    }
-    values.iter().fold(T::zero(), |acc, v| {
-        let d = *v - mean;
-        acc + d * d
-    }) / len_scalar(values.len())
-}
-
-/// 浮点类型无法表示长度时以 NaN 暴露异常，而不是 panic 或静默给出零分母。
-fn len_scalar<T: Float>(len: usize) -> T {
-    T::from(len).unwrap_or_else(T::nan)
 }
 
 #[cfg(test)]

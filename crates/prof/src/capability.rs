@@ -88,63 +88,6 @@ pub fn geometry_seed(skeleton: Skeleton) -> Option<&'static GeometrySeed> {
     GEOMETRY_SEEDS.iter().find(|seed| seed.skeleton == skeleton)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::DType;
-
-    #[cfg(test)]
-    testkit::test_cases! {
-    fn registered_f32_families_supported() {
-        for skeleton in [Skeleton::Elementwise, Skeleton::Reduce, Skeleton::Gemm] {
-            assert!(supports(skeleton, DType::F32), "{skeleton:?}×f32 应在表内");
-        }
-    }
-
-    fn unknown_family_or_dtype_is_a_missing_capability() {
-        // Scan 族与低比特档尚未核通实现覆盖，不登记为能力。
-        assert!(!supports(Skeleton::Scan, DType::F32), "scan 族尚未登记");
-        assert!(
-            !supports(Skeleton::Elementwise, DType::I8),
-            "骨架当前只有 f32 档"
-        );
-    }
-
-    fn table_keys_stay_within_the_skeleton_closed_set() {
-        for cap in CAPABILITIES {
-            assert!(
-                Skeleton::ALL.contains(&cap.skeleton),
-                "未知骨架 {}",
-                cap.skeleton.as_str()
-            );
-        }
-    }
-
-    fn geometry_seed_keys_stay_within_the_closed_set() {
-        for seed in GEOMETRY_SEEDS {
-            assert!(
-                Skeleton::ALL.contains(&seed.skeleton),
-                "种子表骨架 {} 不在闭集内",
-                seed.skeleton.as_str()
-            );
-        }
-    }
-
-    fn landed_families_have_a_default_seed_scan_does_not() {
-        for skeleton in [Skeleton::Elementwise, Skeleton::Reduce, Skeleton::Gemm] {
-            assert!(
-                geometry_seed(skeleton).is_some(),
-                "已落地族 {skeleton:?} 应有默认几何种子"
-            );
-        }
-        assert!(
-            geometry_seed(Skeleton::Scan).is_none(),
-            "Scan 族尚未落地，不登记占位几何"
-        );
-    }
-    }
-}
-
 pub mod native {
     //! 主机微内核的公开兼容与协商面；算法和 unsafe 均在运行时安全桥。
     //! 主机原生微内核（`prof::native`）：设备无关的 CPU 高吞吐内核与它们的协商入口。
@@ -374,5 +317,62 @@ pub mod native {
         GEMM_KERNELS
             .iter()
             .any(|kernel| (kernel.run)(a, b, m, n, k, out))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::DType;
+
+    #[cfg(test)]
+    testkit::test_cases! {
+    fn registered_f32_families_supported() {
+        for skeleton in [Skeleton::Elementwise, Skeleton::Reduce, Skeleton::Gemm] {
+            assert!(supports(skeleton, DType::F32), "{skeleton:?}×f32 应在表内");
+        }
+    }
+
+    fn unknown_family_or_dtype_is_a_missing_capability() {
+        // Scan 族与低比特档尚未核通实现覆盖，不登记为能力。
+        assert!(!supports(Skeleton::Scan, DType::F32), "scan 族尚未登记");
+        assert!(
+            !supports(Skeleton::Elementwise, DType::I8),
+            "骨架当前只有 f32 档"
+        );
+    }
+
+    fn table_keys_stay_within_the_skeleton_closed_set() {
+        for cap in CAPABILITIES {
+            assert!(
+                Skeleton::ALL.contains(&cap.skeleton),
+                "未知骨架 {}",
+                cap.skeleton.as_str()
+            );
+        }
+    }
+
+    fn geometry_seed_keys_stay_within_the_closed_set() {
+        for seed in GEOMETRY_SEEDS {
+            assert!(
+                Skeleton::ALL.contains(&seed.skeleton),
+                "种子表骨架 {} 不在闭集内",
+                seed.skeleton.as_str()
+            );
+        }
+    }
+
+    fn landed_families_have_a_default_seed_scan_does_not() {
+        for skeleton in [Skeleton::Elementwise, Skeleton::Reduce, Skeleton::Gemm] {
+            assert!(
+                geometry_seed(skeleton).is_some(),
+                "已落地族 {skeleton:?} 应有默认几何种子"
+            );
+        }
+        assert!(
+            geometry_seed(Skeleton::Scan).is_none(),
+            "Scan 族尚未落地，不登记占位几何"
+        );
+    }
     }
 }

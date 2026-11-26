@@ -1,6 +1,5 @@
 //! γ 脉冲通道：事件编码 `Encode_event`（§1.5）与 INT8-Spiking 事件臂（E14 / E15）。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

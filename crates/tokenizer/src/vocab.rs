@@ -1,10 +1,45 @@
 //! 中性词表值对象：格式无关的词片表、特殊句柄与族附属数据。
 
-use crate::{SpecialTokens, Token};
+use crate::{Encoding, SpecialTokens};
 use diagnostic::{Code, Error, Result};
 use std::collections::{HashMap, HashSet};
 
 pub use fingerprint::Fingerprint;
+
+/// 一个 token 编号（词表内的下标）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Token(u32);
+
+impl Token {
+    /// 由编号构造。
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// 编号。
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for Token {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+impl From<Token> for u32 {
+    fn from(token: Token) -> Self {
+        token.0
+    }
+}
+
+impl AsRef<u32> for Token {
+    fn as_ref(&self) -> &u32 {
+        &self.0
+    }
+}
 
 /// 词表算法族。判别值即稳定 wire 序号，勿重排、勿改号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,6 +415,58 @@ fn check_scores(family: VocabFamily, scores: &[f32], len: usize) -> Result<()> {
             .with("tokenizer::Vocab::try_new"));
     }
     Ok(())
+}
+
+/// 分词器契约：编号与文本互相转换，且两者必须能往返。
+///
+/// 必需方法只覆盖最薄的编码/解码面；对齐元数据、反查、计数与特殊句柄都有默认实现，
+/// 实现者按需覆盖。
+///
+/// # 不变量
+///
+/// - [`encode`](Self::encode) 产出的每个编号都满足 `token.id() < self.vocab_size()`；
+///   解码方据此把越界视为输入错误，而不是回绕取模。
+/// - 对词表内可表达的文本，`decode(&encode(text)?)` 必须还原原文本；词表外片段按各自
+///   实现的 OOV 策略报错或回退到未知编号。
+/// - 特殊 token 由 [`special_tokens`](Self::special_tokens) 句柄登记，不占普通词片查表路径。
+pub trait Tokenizer {
+    /// 词表大小（含特殊 token）。
+    fn vocab_size(&self) -> usize;
+
+    /// 文本 → token。
+    fn encode(&self, text: &str) -> Result<Vec<Token>>;
+
+    /// token → 文本；遇到词表外的编号或非法 UTF-8 必须报错，不能悄悄替换。
+    fn decode(&self, tokens: &[Token]) -> Result<String>;
+
+    /// 词表身份指纹：实验记录与对拍时标识一份词表。
+    fn fingerprint(&self) -> Fingerprint;
+
+    /// 特殊 token 句柄；基线为空。
+    fn special_tokens(&self) -> &SpecialTokens {
+        &SpecialTokens::EMPTY
+    }
+
+    /// 只数 token 个数，不分配编号向量；默认走 [`Self::encode`]，实现可给零分配路径。
+    fn count(&self, text: &str) -> Result<usize> {
+        Ok(self.encode(text)?.len())
+    }
+
+    /// 文本 → 带对齐元数据的编码结果；默认只填编号，区间与特殊标记留空。
+    fn encode_detailed(&self, text: &str) -> Result<Encoding> {
+        Ok(Encoding::from_ids(self.encode(text)?))
+    }
+
+    /// 词片字节 → 编号；词表不支持反查时返回 `Ok(None)`。
+    fn lookup(&self, _piece: &[u8]) -> Result<Option<Token>> {
+        Ok(None)
+    }
+
+    /// 编号 → 词片字节；词表不支持反查时返回 `Ok(None)`。
+    fn piece(&self, token: Token) -> Result<Option<Vec<u8>>> {
+        let _ = token;
+        Ok(None)
+    }
 }
 
 mod fingerprint {

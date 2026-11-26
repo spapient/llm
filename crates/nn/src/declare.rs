@@ -22,7 +22,49 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::ParamRole;
+/// 参数角色：优化器分组的唯一事实源。
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamRole {
+    /// 普通可训练权重（投影矩阵、稠密权重）：参与权重衰减。
+    #[default]
+    Trainable,
+    /// 偏置向量：可训练，豁免权重衰减。
+    Bias,
+    /// 归一化系数（RMSNorm γ）：可训练，豁免权重衰减。
+    Norm,
+    /// 词表嵌入表：可训练，豁免权重衰减。
+    Embedding,
+}
+
+impl ParamRole {
+    /// 该角色是否进入可训练参数表：四个闭集角色都是参数槽。
+    pub const fn trainable(self) -> bool {
+        true
+    }
+
+    /// 是否豁免权重衰减：偏置、归一化系数与嵌入表不衰减。
+    pub const fn wd_exempt(self) -> bool {
+        matches!(self, Self::Bias | Self::Norm | Self::Embedding)
+    }
+
+    /// 角色短名：诊断、快照与报告里的稳定标签，与变体一一对应。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Trainable => "trainable",
+            Self::Bias => "bias",
+            Self::Norm => "norm",
+            Self::Embedding => "embedding",
+        }
+    }
+}
+
+/// 固定形状的输出头：`[4096]` 输出、输入宽度 4096，权重编码由 `gemv_i4` 承担。
+#[crate::spec(name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"])]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LmHead;
 
 /// 一份已校验规格 + 元素数，被单轴族的具体层包裹。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

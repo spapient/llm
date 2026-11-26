@@ -20,7 +20,6 @@
 //! **本模块只给脉冲臂**：STE 代理梯度训练不在里面（`train` 侧没有脉冲反传），能效（E13）也不
 //! 由它出数——那需要目标设备上的实测卡。这里给的是「怎么算」以及可测的不变量。
 
-use crate::invalid;
 use diagnostic::Result;
 
 use crate::csa::finite;

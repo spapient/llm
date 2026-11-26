@@ -81,7 +81,7 @@ macro_rules! builders {
 macro_rules! validation_rules {
     ($site:expr; $($condition:expr => $message:expr),* $(,)?) => {$(
         if !$condition {
-            return Err(Error::new(Code::Invalid, $message).with($site));
+            return Err(diagnostic::Error::new(diagnostic::Code::Invalid, $message).with($site));
         }
     )*};
 }

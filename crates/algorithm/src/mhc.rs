@@ -1,6 +1,5 @@
 //! 双随机残差混合（mHC，§5.8.2）。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

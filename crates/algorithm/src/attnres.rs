@@ -21,7 +21,6 @@
 //!
 //! 空来源被拒：那等于「按注意力取空集」，softmax 无定义，残差也没有东西可并。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

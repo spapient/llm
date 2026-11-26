@@ -378,16 +378,22 @@ fn check_ratio(value: f64, label: &str) -> Result<()> {
 // 语义表推出，这里不写第二份流量常数。
 // ---------------------------------------------------------------------------
 
-/// 整除对齐点：`tile` 的整数倍，不超过 `max`；`tile` 为 0 或 `max` 小于 `tile` 时为空。
-#[must_use]
-pub fn aligned_points(tile: usize, max: usize) -> Vec<usize> {
+/// tile 档点生成器：`tile·q + offset`（对齐点 offset 为 0，碎片边界点为 −1），不超过 `max`；
+/// `tile` 为 0 时为空。`i64` 中转是为了让 `−1` 偏移不在无符号域下溢。
+fn tile_points(tile: usize, max: usize, offset: i64) -> Vec<usize> {
     if tile == 0 {
         return Vec::new();
     }
     (1..)
-        .map(|q| q * tile)
+        .map(|q| (q as i64 * tile as i64 + offset) as usize)
         .take_while(|&point| point <= max)
         .collect()
+}
+
+/// 整除对齐点：`tile` 的整数倍，不超过 `max`；`tile` 为 0 或 `max` 小于 `tile` 时为空。
+#[must_use]
+pub fn aligned_points(tile: usize, max: usize) -> Vec<usize> {
+    tile_points(tile, max, 0)
 }
 
 /// 非整除边界点：每档 `tile·q − 1`（满块减一的碎片形状），不超过 `max`。
@@ -396,13 +402,7 @@ pub fn aligned_points(tile: usize, max: usize) -> Vec<usize> {
 /// 对齐点测不到这条路径。
 #[must_use]
 pub fn boundary_points(tile: usize, max: usize) -> Vec<usize> {
-    if tile == 0 {
-        return Vec::new();
-    }
-    (1..)
-        .map(|q| q * tile - 1)
-        .take_while(|&point| point <= max)
-        .collect()
+    tile_points(tile, max, -1)
 }
 
 // ---------------------------------------------------------------------------
@@ -539,31 +539,29 @@ impl PhaseLatency {
 /// 折成看似平稳的间隔。
 #[must_use]
 pub fn phase_latency(marks: &[f64]) -> Option<PhaseLatency> {
-    if marks.is_empty() || !marks.iter().all(|mark| mark.is_finite()) {
+    if marks.is_empty() || !marks[0].is_finite() {
         return None;
     }
-    let ttft = marks[0];
-    let e2e = marks[marks.len() - 1];
     let itl: Vec<f64> = marks.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    if itl.iter().any(|gap| *gap < 0.0) {
+    if itl.iter().any(|gap| !gap.is_finite() || *gap < 0.0) {
         return None;
     }
     let tpot = mean(&itl);
     Some(PhaseLatency {
-        ttft_ns: ttft,
+        ttft_ns: marks[0],
         tpot_ns: tpot,
-        e2e_ns: e2e,
+        e2e_ns: marks[marks.len() - 1],
         itl,
     })
 }
 
-/// SLO 达成率：满足 SLO 的请求占比；总数为 0 时返回 0，不除零。
+/// SLO 达成率：满足 SLO 的请求占比，钳制在 `[0, 1]`；总数为 0 时返回 0，不除零。
 #[must_use]
 pub fn slo_hit_rate(met: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
     } else {
-        met as f64 / total as f64
+        met.min(total) as f64 / total as f64
     }
 }
 

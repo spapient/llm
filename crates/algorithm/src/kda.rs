@@ -30,7 +30,6 @@
 //! 悄悄随键的范数变化。零键被拒而不是归一成 `NaN`。纯算术统一走 [`Scalar`] 泛型，点积与加权累加复用
 //! [`crate::csa`] 的那两份。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

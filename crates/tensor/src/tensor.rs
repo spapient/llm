@@ -3,7 +3,7 @@
 use core::{marker::PhantomData, ops::Range};
 use diagnostic::Result;
 
-use crate::element::Element;
+use crate::Element;
 use crate::{DType, layout};
 
 /// 逻辑张量：存储 `B`、秩见证 `R`、元素类型 `K` 各占一个泛型位。

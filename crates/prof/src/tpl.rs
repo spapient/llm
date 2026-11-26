@@ -209,6 +209,88 @@ fn is_key(key: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
+pub mod formula {
+    //! 骨架的表达式协议：一条 einsum 表达式、一张操作数表、一个按实现分开的缓存单元格。
+    use crate::einsum::{Formula, FormulaCache, OperandSpec};
+    use diagnostic::Error;
+
+    /// 表达式的主人：一副骨架怎么声明表达式、缓存在哪、解析失败报什么帧。
+    pub trait FormulaOwner {
+        /// 一条 einsum 表达式。
+        const EXPR: &'static str;
+
+        /// 表达式各项的位宽与方向，顺序与 [`FormulaOwner::EXPR`] 的项一一对应。
+        const OPERANDS: &'static [OperandSpec];
+
+        /// 解析失败时的诊断帧：点名是哪一族在读表达式（如 `prof::unary::formula`）。
+        const FRAME: &'static str;
+
+        /// 本实现的缓存单元格。
+        fn cache() -> &'static FormulaCache;
+
+        /// 表达式：第一次调用时解析并校验，之后复用。
+        ///
+        /// # Errors
+        ///
+        /// 表达式与操作数表不自洽时返回说明（帧即 [`FormulaOwner::FRAME`]）。
+        fn formula() -> Result<&'static Formula, Error> {
+            Self::cache().get(Self::EXPR, Self::OPERANDS, Self::FRAME)
+        }
+    }
+
+    /// 一个实现自己的表达式缓存单元格。
+    #[macro_export]
+    macro_rules! formula_cell {
+        () => {{
+            static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
+            &CACHE
+        }};
+    }
+
+    /// 装配一份 [`FormulaOwner`]：表达式、操作数表、诊断帧与缓存单元格一次写全，
+    /// 避免每族骨架把同一份 impl 样板抄一遍。
+    #[macro_export]
+    macro_rules! formula_owner {
+        ($ty:ident, $expr:expr, $operands:expr, $frame:expr) => {
+            impl $crate::formula::FormulaOwner for $ty {
+                const EXPR: &'static str = $expr;
+
+                const OPERANDS: &'static [$crate::einsum::OperandSpec] = &$operands;
+
+                const FRAME: &'static str = $frame;
+
+                fn cache() -> &'static $crate::einsum::FormulaCache {
+                    $crate::formula_cell!()
+                }
+            }
+        };
+    }
+}
+
+pub mod guard {
+    //! 缓冲长度校验：`(实际, 需要, 名称)` 逐条比对，失败即带名称与两个数字返回。
+    use diagnostic::{Code, Error, Result};
+
+    /// 一条长度约束：缓冲不足时报出名称、实际长度与下限。
+    fn check_count(actual: usize, required: usize, what: &str) -> Result<()> {
+        if actual < required {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{what}: 缓冲 {actual}，需要 {required}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 一组约束，逐条短路；把多处 `?` 收进一个出口，调用点只写一次。
+    pub fn check_all(bounds: &[(usize, usize, &str)]) -> Result<()> {
+        for &(actual, required, what) in bounds {
+            check_count(actual, required, what)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,87 +375,5 @@ mod tests {
             );
         }
     }
-    }
-}
-
-pub mod formula {
-    //! 骨架的表达式协议：一条 einsum 表达式、一张操作数表、一个按实现分开的缓存单元格。
-    use crate::einsum::{Formula, FormulaCache, OperandSpec};
-    use diagnostic::Error;
-
-    /// 表达式的主人：一副骨架怎么声明表达式、缓存在哪、解析失败报什么帧。
-    pub trait FormulaOwner {
-        /// 一条 einsum 表达式。
-        const EXPR: &'static str;
-
-        /// 表达式各项的位宽与方向，顺序与 [`FormulaOwner::EXPR`] 的项一一对应。
-        const OPERANDS: &'static [OperandSpec];
-
-        /// 解析失败时的诊断帧：点名是哪一族在读表达式（如 `prof::unary::formula`）。
-        const FRAME: &'static str;
-
-        /// 本实现的缓存单元格。
-        fn cache() -> &'static FormulaCache;
-
-        /// 表达式：第一次调用时解析并校验，之后复用。
-        ///
-        /// # Errors
-        ///
-        /// 表达式与操作数表不自洽时返回说明（帧即 [`FormulaOwner::FRAME`]）。
-        fn formula() -> Result<&'static Formula, Error> {
-            Self::cache().get(Self::EXPR, Self::OPERANDS, Self::FRAME)
-        }
-    }
-
-    /// 一个实现自己的表达式缓存单元格。
-    #[macro_export]
-    macro_rules! formula_cell {
-        () => {{
-            static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
-            &CACHE
-        }};
-    }
-
-    /// 装配一份 [`FormulaOwner`]：表达式、操作数表、诊断帧与缓存单元格一次写全，
-    /// 避免每族骨架把同一份 impl 样板抄一遍。
-    #[macro_export]
-    macro_rules! formula_owner {
-        ($ty:ident, $expr:expr, $operands:expr, $frame:expr) => {
-            impl $crate::formula::FormulaOwner for $ty {
-                const EXPR: &'static str = $expr;
-
-                const OPERANDS: &'static [$crate::einsum::OperandSpec] = &$operands;
-
-                const FRAME: &'static str = $frame;
-
-                fn cache() -> &'static $crate::einsum::FormulaCache {
-                    $crate::formula_cell!()
-                }
-            }
-        };
-    }
-}
-
-pub mod guard {
-    //! 缓冲长度校验：`(实际, 需要, 名称)` 逐条比对，失败即带名称与两个数字返回。
-    use diagnostic::{Code, Error, Result};
-
-    /// 一条长度约束：缓冲不足时报出名称、实际长度与下限。
-    fn check_count(actual: usize, required: usize, what: &str) -> Result<()> {
-        if actual < required {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("{what}: 缓冲 {actual}，需要 {required}"),
-            ));
-        }
-        Ok(())
-    }
-
-    /// 一组约束，逐条短路；把多处 `?` 收进一个出口，调用点只写一次。
-    pub fn check_all(bounds: &[(usize, usize, &str)]) -> Result<()> {
-        for &(actual, required, what) in bounds {
-            check_count(actual, required, what)?;
-        }
-        Ok(())
     }
 }

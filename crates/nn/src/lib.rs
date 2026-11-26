@@ -49,7 +49,7 @@
 #![cfg_attr(nightly, feature(portable_simd))]
 
 // 生成的代码用 `::nn::..` 指回本 crate，因此 crate 内部也必须能按名字解析到自己：
-// 这样注解在 `nn` 自己身上（`lm_head` 模块里的 `LmHead`）与在下游 crate 里是同一套展开。
+// 这样注解在 `nn` 自己身上（`declare` 模块里的 `LmHead`）与在下游 crate 里是同一套展开。
 extern crate self as nn;
 
 #[doc(inline)]
@@ -60,59 +60,9 @@ mod contract;
 mod declare;
 mod engram;
 mod recurrent;
-mod weight;
-mod lm_head {
-    //! `lm_head`：由注解声明的固定形状层。
-
-    /// 固定形状的输出头：`[4096]` 输出、输入宽度 4096，权重编码由 `gemv_i4` 承担。
-    #[crate::spec(name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"])]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub struct LmHead;
-}
-mod param_role {
-    //! 参数角色闭集：一个参数槽归哪个优化器组（D11；权重衰减豁免与可训练判定由角色派生）。
-
-    /// 参数角色：优化器分组的唯一事实源。
-    #[derive(
-        Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-    )]
-    #[serde(rename_all = "snake_case")]
-    pub enum ParamRole {
-        /// 普通可训练权重（投影矩阵、稠密权重）：参与权重衰减。
-        #[default]
-        Trainable,
-        /// 偏置向量：可训练，豁免权重衰减。
-        Bias,
-        /// 归一化系数（RMSNorm γ）：可训练，豁免权重衰减。
-        Norm,
-        /// 词表嵌入表：可训练，豁免权重衰减。
-        Embedding,
-    }
-
-    impl ParamRole {
-        /// 该角色是否进入可训练参数表：四个闭集角色都是参数槽。
-        pub const fn trainable(self) -> bool {
-            true
-        }
-
-        /// 是否豁免权重衰减：偏置、归一化系数与嵌入表不衰减。
-        pub const fn wd_exempt(self) -> bool {
-            matches!(self, Self::Bias | Self::Norm | Self::Embedding)
-        }
-
-        /// 角色短名：诊断、快照与报告里的稳定标签，与变体一一对应。
-        pub const fn as_str(self) -> &'static str {
-            match self {
-                Self::Trainable => "trainable",
-                Self::Bias => "bias",
-                Self::Norm => "norm",
-                Self::Embedding => "embedding",
-            }
-        }
-    }
-}
 mod spatial;
 mod stack;
+mod weight;
 
 #[doc(inline)]
 pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
@@ -137,10 +87,10 @@ pub(crate) use contract::{nonzero, nonzero_all};
 pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
 
 #[doc(inline)]
-pub use lm_head::LmHead;
+pub use declare::LmHead;
 
 #[doc(inline)]
-pub use param_role::ParamRole;
+pub use declare::ParamRole;
 
 #[doc(inline)]
 pub use spatial::{
@@ -229,6 +179,14 @@ pub use sch::layout;
 /// 形状由 `tensor` 拥有（见 `docs/ARCHITECTURE.md` 第三节），这里再导出：`Contract::output` 本来就返回它，
 /// 消费者与 `#[spec]` 生成的代码都不该为此额外依赖 `tensor`。
 pub use tensor::Shape;
+
+#[cfg(test)]
+#[path = "../tests/prop_tests.rs"]
+mod prop_tests;
+
+#[cfg(test)]
+#[path = "../tests/kernel_prop_numeric.rs"]
+mod prop_numeric;
 
 #[cfg(test)]
 mod tests {
@@ -748,14 +706,6 @@ mod tests {
     }
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/prop_tests.rs"]
-mod prop_tests;
-
-#[cfg(test)]
-#[path = "../tests/kernel_prop_numeric.rs"]
-mod prop_numeric;
 
 #[cfg(test)]
 mod pointwise_tests {

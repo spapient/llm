@@ -4,7 +4,7 @@ use core::ops::{Add, Div, Mul, Sub};
 
 use diagnostic::Result;
 
-use crate::element::{Element, NumericElement, OrderedElement};
+use crate::{Element, NumericElement, OrderedElement};
 use crate::{Owned, Rank, Store, Tensor, invalid};
 
 /// 绝对值与受溢出保护的绝对差比较。

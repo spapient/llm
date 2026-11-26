@@ -26,12 +26,80 @@
 #![deny(unsafe_code)]
 #![deny(clippy::pedantic)]
 
+mod sealed {
+    /// 禁止外部类型加入封闭能力分组。
+    pub trait Sealed {}
+}
+
+/// 张量元素标量；`Default` 支撑零值分配，`Copy` 支撑按值遍历。
+pub trait Element: Copy + Default + 'static {
+    /// 对应的运行时元素类型。
+    const DTYPE: dtype::DType;
+}
+
+/// 可参与算术的浮点与整数元素。
+pub trait NumericElement: Element + sealed::Sealed {}
+
+/// 可参与偏序极值归约的数值元素。
+pub trait OrderedElement: NumericElement + PartialOrd {}
+
+/// 原生浮点元素。
+pub trait FloatElement: NumericElement {}
+
+/// 原生有符号或无符号整数元素。
+pub trait IntElement: NumericElement {}
+
+/// 布尔元素。
+pub trait BoolElement: Element + sealed::Sealed {}
+
+macro_rules! elements {
+    ($($scalar:ty => $dtype:expr),+ $(,)?) => {
+        $(
+            impl Element for $scalar {
+                const DTYPE: DType = $dtype;
+            }
+        )+
+    };
+}
+
+macro_rules! numeric_group {
+    ($capability:ident, $($scalar:ty),+ $(,)?) => {
+        $(
+            impl sealed::Sealed for $scalar {}
+            impl NumericElement for $scalar {}
+            impl OrderedElement for $scalar {}
+            impl $capability for $scalar {}
+        )+
+    };
+}
+
+elements! {
+    bool => DType::Bool,
+    u8 => DType::U8,
+    u16 => DType::U16,
+    u32 => DType::U32,
+    u64 => DType::U64,
+    i8 => DType::I8,
+    i16 => DType::I16,
+    i32 => DType::I32,
+    i64 => DType::I64,
+    f32 => DType::F32,
+    f64 => DType::F64,
+    half::f16 => DType::F16,
+    half::bf16 => DType::BF16,
+}
+
+numeric_group!(FloatElement, f32, f64, half::f16, half::bf16);
+numeric_group!(IntElement, u8, u16, u32, u64, i8, i16, i32, i64);
+
+impl sealed::Sealed for bool {}
+impl BoolElement for bool {}
+
 mod layout;
 mod ops;
 mod tensor;
 
 pub use dtype::{Class, DType, DTypeSpec, FloatLayout};
-pub use element::{BoolElement, Element, FloatElement, IntElement, NumericElement, OrderedElement};
 pub use ops::Abs;
 pub use tensor::{
     AxisLen, DynTensor, Order, Owned, Rank, Shape, Slice, Store, StoreMut, Tensor, View, ViewMut,
@@ -45,84 +113,13 @@ pub(crate) fn invalid(message: impl Into<String>, marker: &str) -> Error {
     Error::new(Code::Invalid, message).with(marker)
 }
 
-mod element {
-    //! Rust 标量到 [`DType`] 的封闭映射及算子能力分组。
-
-    use crate::DType;
-
-    mod sealed {
-        /// 禁止外部类型加入封闭能力分组。
-        pub trait Sealed {}
-    }
-
-    /// 张量元素标量；`Default` 支撑零值分配，`Copy` 支撑按值遍历。
-    pub trait Element: Copy + Default + 'static {
-        /// 对应的运行时元素类型。
-        const DTYPE: DType;
-    }
-
-    /// 可参与算术的浮点与整数元素。
-    pub trait NumericElement: Element + sealed::Sealed {}
-
-    /// 可参与偏序极值归约的数值元素。
-    pub trait OrderedElement: NumericElement + PartialOrd {}
-
-    /// 原生浮点元素。
-    pub trait FloatElement: NumericElement {}
-
-    /// 原生有符号或无符号整数元素。
-    pub trait IntElement: NumericElement {}
-
-    /// 布尔元素。
-    pub trait BoolElement: Element + sealed::Sealed {}
-
-    macro_rules! elements {
-        ($($scalar:ty => $dtype:expr),+ $(,)?) => {
-            $(
-                impl Element for $scalar {
-                    const DTYPE: DType = $dtype;
-                }
-            )+
-        };
-    }
-
-    macro_rules! numeric_group {
-        ($capability:ident, $($scalar:ty),+ $(,)?) => {
-            $(
-                impl sealed::Sealed for $scalar {}
-                impl NumericElement for $scalar {}
-                impl OrderedElement for $scalar {}
-                impl $capability for $scalar {}
-            )+
-        };
-    }
-
-    elements! {
-        bool => DType::Bool,
-        u8 => DType::U8,
-        u16 => DType::U16,
-        u32 => DType::U32,
-        u64 => DType::U64,
-        i8 => DType::I8,
-        i16 => DType::I16,
-        i32 => DType::I32,
-        i64 => DType::I64,
-        f32 => DType::F32,
-        f64 => DType::F64,
-        half::f16 => DType::F16,
-        half::bf16 => DType::BF16,
-    }
-
-    numeric_group!(FloatElement, f32, f64, half::f16, half::bf16);
-    numeric_group!(IntElement, u8, u16, u32, u64, i8, i16, i32, i64);
-
-    impl sealed::Sealed for bool {}
-    impl BoolElement for bool {}
-}
-
 #[cfg(test)]
 #[path = "../tests/ops_tests.rs"]
 mod ops_tests;
+#[cfg(test)]
+#[path = "../tests/view_tests.rs"]
+mod view_tests;
+
 #[cfg(test)]
 mod prop_shape {
     //! 形状与步长的代数性质：任意布局都把多下标**双射**到 `0..numel`。
@@ -332,6 +329,7 @@ mod prop_shape {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -812,6 +810,3 @@ mod tests {
         assert_eq!(row.iter().sum::<u8>(), 7);
     }
 }
-#[cfg(test)]
-#[path = "../tests/view_tests.rs"]
-mod view_tests;

@@ -31,28 +31,17 @@
 
 #![deny(unsafe_code)]
 
-use diagnostic::{Code, Error};
-
-/// 入口拒绝：几何、取值、顺序任一不合。
-///
-/// 全 crate 只这一处绑定 `Code::Invalid` 与站点标签，各族只负责说清「为什么」——`site` 是
-/// `algorithm::<族>`，让诊断能指回是哪一族拒绝的。在此之前 15 个文件各自写
-/// `Error::new(Code::Invalid, …).with(SITE)`，84 处、每处 3–6 行，其中 2 处还漏掉了站点标签。
-pub(crate) fn invalid(site: &'static str, message: std::fmt::Arguments<'_>) -> Error {
-    Error::new(Code::Invalid, message.to_string()).with(site)
-}
-
-/// 判据失败：`invalid!("…{x}…")` 即 `invalid(SITE, format_args!("…{x}…"))`。
+/// 判据失败：`invalid!("…{x}…")` 即 `$crate::invalid(SITE, format_args!("…{x}…"))`。
 ///
 /// 两层壳（`SITE` + 格式化）在每个判据处都要重写一遍，而按 60 列的 `fn_call_width`，
-/// `invalid(SITE, format_args!(…))` 只要消息带插值就必然被 `rustfmt` 拆成四行——122 处判据
+/// `$crate::invalid(SITE, format_args!(…))` 只要消息带插值就必然被 `rustfmt` 拆成四行——122 处判据
 /// 里 104 处是这么摊开的。宏把两层壳一起收掉。**单支**是有意的：若给纯字面量留一条
 /// `$msg:literal` 分支，`invalid!("…{bad}…")` 会命中字面量分支而不插值，诊断文案被静默改坏；
 /// 而给内联捕获补显式实参又会被 `redundant_argument` 拦下。`SITE` 由调用点所在的族提供，
 /// 宏体按卫生性引用不到别族的标签。
 macro_rules! invalid {
     ($($arg:tt)+) => {
-        invalid(SITE, format_args!($($arg)+))
+        $crate::invalid(SITE, format_args!($($arg)+))
     };
 }
 
@@ -83,24 +72,16 @@ macro_rules! accessors {
     };
 }
 
-mod attnres;
-mod codec;
-mod csa;
-mod emit;
-mod hybrid;
-mod kda;
-mod latent;
-mod mamba;
-mod mhc;
-mod mix;
-mod mla;
-mod moe;
-mod patch;
-mod policy;
-mod spike;
+use diagnostic::{Code, Error};
 
-// 台账与落层入口原在一个独立文件里，内联后它们直接住在 crate 根，少一层模块跳转；
-// `wire` 只留 4 行别名，保住 `algorithm::wire::…` 这条既有路径。
+/// 入口拒绝：几何、取值、顺序任一不合。
+///
+/// 全 crate 只这一处绑定 `Code::Invalid` 与站点标签，各族只负责说清「为什么」——`site` 是
+/// `algorithm::<族>`，让诊断能指回是哪一族拒绝的。在此之前 15 个文件各自写
+/// `Error::new(Code::Invalid, …).with(SITE)`，84 处、每处 3–6 行，其中 2 处还漏掉了站点标签。
+pub(crate) fn invalid(site: &'static str, message: std::fmt::Arguments<'_>) -> Error {
+    Error::new(Code::Invalid, message.to_string()).with(site)
+}
 
 use diagnostic::Result;
 use nn::{Contract, LatentAttention, MatMul};
@@ -222,7 +203,7 @@ pub fn ledger() -> [Family; 17] {
 /// # Errors
 ///
 /// 流数为零或矩阵层拒绝该几何。
-pub fn mhc_layer(m: &Mhc<f32>, name: &str) -> Result<MatMul> {
+pub fn mhc_layer(m: &crate::Mhc<f32>, name: &str) -> Result<MatMul> {
     MatMul::new(name, m.streams(), m.streams())
 }
 
@@ -231,7 +212,7 @@ pub fn mhc_layer(m: &Mhc<f32>, name: &str) -> Result<MatMul> {
 /// # Errors
 ///
 /// 任一宽度为零或算子缺语义表。
-pub fn mla_layer(m: &Mla<f32>, seq: usize, name: &str) -> Result<LatentAttention> {
+pub fn mla_layer(m: &crate::Mla<f32>, seq: usize, name: &str) -> Result<LatentAttention> {
     LatentAttention::new(name, seq, m.latent(), m.heads())
 }
 
@@ -240,7 +221,11 @@ pub fn mla_layer(m: &Mla<f32>, seq: usize, name: &str) -> Result<LatentAttention
 /// # Errors
 ///
 /// 任一宽度为零或算子缺语义表。
-pub fn hybrid_layer(h: &Hybrid<f32>, seq: usize, idx: usize) -> Result<Vec<Box<dyn Contract>>> {
+pub fn hybrid_layer(
+    h: &crate::Hybrid<f32>,
+    seq: usize,
+    idx: usize,
+) -> Result<Vec<Box<dyn Contract>>> {
     // 层名带位置：同一个混合块会在一座塔里出现多次，重名会被 `nn::Stack::of` 拒收。
     let attn = mla_layer(h.attention(), seq, &format!("hybrid.{idx}.attn"))?;
     Ok(vec![
@@ -256,7 +241,10 @@ pub fn hybrid_layer(h: &Hybrid<f32>, seq: usize, idx: usize) -> Result<Vec<Box<d
 /// # Errors
 ///
 /// 任一宽度为零或算子缺语义表。
-pub fn tower_layers(attention: &[Hybrid<f32>], seq: usize) -> Result<Vec<Box<dyn Contract>>> {
+pub fn tower_layers(
+    attention: &[crate::Hybrid<f32>],
+    seq: usize,
+) -> Result<Vec<Box<dyn Contract>>> {
     let mut layers = Vec::new();
     for (idx, hybrid) in attention.iter().enumerate() {
         layers.extend(hybrid_layer(hybrid, seq, idx)?);
@@ -264,7 +252,23 @@ pub fn tower_layers(attention: &[Hybrid<f32>], seq: usize) -> Result<Vec<Box<dyn
     Ok(layers)
 }
 
-/// 台账的旧路径：内联后各项在 crate 根，别名让 `algorithm::wire::…` 继续成立。
+mod attnres;
+mod codec;
+mod csa;
+mod emit;
+mod hybrid;
+mod kda;
+mod latent;
+mod mamba;
+mod mhc;
+mod mix;
+mod mla;
+mod moe;
+mod patch;
+mod policy;
+mod spike;
+
+/// 台账与落层入口的兼容路径；实现统一由 crate 根条目持有。
 pub mod wire {
     pub use crate::{
         Blocked, Family, Wiring, hybrid_layer, ledger, mhc_layer, mla_layer, tower_layers,

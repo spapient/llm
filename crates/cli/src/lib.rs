@@ -69,11 +69,13 @@ pub fn entry_with_settings(
     route(invocation.command(), settings)
 }
 
+use crate::settings::Settings;
+
 /// 一级分派：自处理的命令直接落地，其余按类别下推。
-fn route(command: &Command<'_>, settings: &settings::Settings) -> Result<()> {
+pub(crate) fn route(command: &Command<'_>, settings: &Settings) -> Result<()> {
     match command {
         Command::Help => usage(),
-        Command::Platform => platform::report(),
+        Command::Platform => crate::platform::report(),
         Command::Status { .. } | Command::Run { .. } | Command::Train { .. } => {
             run_command(command, settings)
         }
@@ -83,19 +85,19 @@ fn route(command: &Command<'_>, settings: &settings::Settings) -> Result<()> {
 
 /// 打印用法。
 fn usage() -> Result<()> {
-    print!("{USAGE}");
+    print!("{}", crate::USAGE);
     Ok(())
 }
 
 /// 读权重、跑闭环：三者都在算，都归这里。
-fn run_command(command: &Command<'_>, settings: &settings::Settings) -> Result<()> {
+fn run_command(command: &Command<'_>, settings: &Settings) -> Result<()> {
     match command {
-        Command::Status { weights } => status::status(weights.as_deref()),
+        Command::Status { weights } => crate::status::status(weights.as_deref()),
         Command::Run {
             weights,
             input,
             device,
-        } => run::run(weights, input.as_deref(), device.as_deref()),
+        } => crate::run::run(weights, input.as_deref(), device.as_deref()),
         Command::Train {
             lr,
             warmup,
@@ -103,7 +105,7 @@ fn run_command(command: &Command<'_>, settings: &settings::Settings) -> Result<(
             clip,
             accumulation,
             load,
-        } => train::train_run(
+        } => crate::train::train_run(
             settings,
             lr.as_deref(),
             warmup.as_deref(),
@@ -119,9 +121,9 @@ fn run_command(command: &Command<'_>, settings: &settings::Settings) -> Result<(
 /// 容器类命令：读、写、沉降一个 `.u` 文件。
 fn objects(command: &Command<'_>) -> Result<()> {
     match command {
-        Command::Import { input, output } => archive::import(input, output),
-        Command::Settle { input, output } => archive::settle(input, output.as_deref()),
-        Command::Audit { input, ledger } => archive::audit(input, ledger),
+        Command::Import { input, output } => crate::archive::import(input, output),
+        Command::Settle { input, output } => crate::archive::settle(input, output.as_deref()),
+        Command::Audit { input, ledger } => crate::archive::audit(input, ledger),
         other => examine(other),
     }
 }
@@ -129,9 +131,9 @@ fn objects(command: &Command<'_>) -> Result<()> {
 /// `inspect` / `check` / `deploy` 只差一步验码：同一个入参，同一层。
 fn examine(command: &Command<'_>) -> Result<()> {
     match command {
-        Command::Inspect { input } => archive::inspect(input),
-        Command::Check { input } => archive::check_archive(input),
-        Command::Deploy { input } => archive::deploy(input),
+        Command::Inspect { input } => crate::archive::inspect(input),
+        Command::Check { input } => crate::archive::check_archive(input),
+        Command::Deploy { input } => crate::archive::deploy(input),
         other => stray(other),
     }
 }

@@ -1,6 +1,5 @@
 //! V4 CSA/HCA 超长注意力（§5.8.3）：序列分块压缩 + 稀疏/稠密注意力。
 
-use crate::invalid;
 use core::cmp::Ordering;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;

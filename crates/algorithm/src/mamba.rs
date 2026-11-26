@@ -22,7 +22,6 @@
 //! 读数用**本 token 更新之后**的状态（与 `kda` 的读法一致），因此单个 token 读得到自己写下的东西；
 //! 跨 token 的因果由调用次序保证，不由本模块合成。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::{Scalar, exp_trapezoid};
 

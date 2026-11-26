@@ -795,6 +795,10 @@ fn unpack_q3_scales(raw: &[u8]) -> [i8; 16] {
 }
 
 #[cfg(test)]
+#[path = "../tests/gguf.rs"]
+mod tests;
+
+#[cfg(test)]
 mod dequant_tests {
     use super::*;
 
@@ -867,7 +871,3 @@ mod dequant_tests {
     }
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/gguf.rs"]
-mod tests;

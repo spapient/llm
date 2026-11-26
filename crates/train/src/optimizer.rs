@@ -630,6 +630,10 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
 }
 
 #[cfg(test)]
+#[path = "../tests/optimizer_tests.rs"]
+mod tests;
+
+#[cfg(test)]
 mod prop_optimizer {
     //! 优化器的代数性质：闭式解可断言的地方就断言等号，不留近似余地。
     //!
@@ -747,6 +751,3 @@ mod prop_optimizer {
         }
     }
 }
-#[cfg(test)]
-#[path = "../tests/optimizer_tests.rs"]
-mod tests;

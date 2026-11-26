@@ -47,7 +47,6 @@
 //! 本层承诺的只有一件事——**这五件里被选中的三件，按上面这个次序，能跑出一层前向**，且每一处
 //! 连接点的理由都写在上面的清单里。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

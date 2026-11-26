@@ -552,10 +552,10 @@ pub fn median_baseline(history: &[HistorySample]) -> Option<f64> {
 /// 方向取 [`Direction::Lower`]（ns 越小越好，回退 = 观测越过基线预算线）；历史不足、基线
 /// 非法或预算线越界时返回 [`None`]，不拿单份历史冒充滚动基线。
 pub fn compare(current: f64, history: &[HistorySample], budget_percent: f64) -> Option<Judgement> {
-    let baseline = median_baseline(history)?;
-    let case = Case::new("trend", baseline, budget_percent, Direction::Lower).ok()?;
     if !current.is_finite() {
         return None;
     }
+    let baseline = median_baseline(history)?;
+    let case = Case::new("trend", baseline, budget_percent, Direction::Lower).ok()?;
     Some(case.judge(current))
 }

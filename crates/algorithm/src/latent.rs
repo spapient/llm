@@ -29,7 +29,6 @@
 //! 泛型（`f32` 前向、`f64` 对拍）；点积、softmax、加权累加与块表寻址都复用 `csa` 的那几份，
 //! 不因模块边界重写。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

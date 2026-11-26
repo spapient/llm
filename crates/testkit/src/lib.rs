@@ -63,49 +63,19 @@ pub mod rng {
 pub mod scratch;
 pub mod witness;
 
-// 表驱动宏直接定义在 crate 根，避免仅为宏声明单开口袋文件。
-
 /// 逐条执行命名用例：`cases!(闭包; "用例名" => 输入, …)`。
-///
-/// 表驱动配置化：用例是数据，判据只有一份。闭包接收 `(用例名, 输入)` 两个参数，每条表项顺序
-/// 调用一次；用例名应写进断言消息，失败时即可定位到具体表项。
-///
-/// ```
-/// fn double(x: i32) -> i32 { x * 2 }
-/// llm_testkit::cases!(|name, (input, want): (i32, i32)| {
-///     assert_eq!(double(input), want, "{name}");
-/// };
-/// "零" => (0, 0),
-/// "正数" => (3, 6),
-/// "负数" => (-2, -4),
-/// );
-/// ```
 #[macro_export]
 macro_rules! cases {
     ($run:expr; $($name:literal => $input:expr),+ $(,)?) => {{
-        // `&mut` 绑定同时容纳 `Fn` 与 `FnMut` 闭包（如捕获 `&mut` 计数器），无需可变性警告豁免。
         let run = &mut $run;
         $( run($name, $input); )+
     }};
 }
 
-/// 把一组同形用例各生成一个独立 `#[test]`：`test_cases!(模块名 { 测试名 => 输入, … }, 判据)`。
+/// 把一组同形用例各生成一个独立 `#[test]`。
 ///
-/// 与 [`cases!`] 的差别是**一条表项一个测试函数**：测试报告里每条用例单独计数、单独并行，
-/// 单条失败不拖累同组其他用例的执行。判据闭包接收 `(输入)`，测试名即表项标识。
-///
-/// 异构用例共用第二种形态：`test_cases! { fn 测试名() { … } … }`。函数名、正文、返回类型与
-/// `#[ignore]` / `#[should_panic]` 等注解原样保留，只把重复的 `#[test]` 注册收进同一张声明表。
-///
-/// ```
-/// llm_testkit::test_cases!(parity {
-///     even_zero => 0,
-///     even_two => 2,
-///     even_ten => 10,
-/// }, |input: i32| {
-///     assert_eq!(input % 2, 0);
-/// });
-/// ```
+/// 第一支直接接收连续标准测试函数，保留函数名、签名、返回类型与
+/// `#[ignore]` / `#[should_panic]` 等注解，不复制注册骨架；第二支是表驱动输入 + 单一判据。
 #[macro_export]
 macro_rules! test_cases {
     ($($(#[$attr:meta])* fn $name:ident() $(-> $ret:ty)? $body:block)+) => {
@@ -118,7 +88,6 @@ macro_rules! test_cases {
     ($module:ident { $($(#[$attr:meta])* $name:ident => $input:expr),+ $(,)? }, $run:expr) => {
         #[cfg(test)]
         mod $module {
-            // 判据闭包常要调用外层的装配 helper；`use super::*` 把它们带进生成模块。
             #[allow(unused_imports)]
             use super::*;
             $(
@@ -139,14 +108,12 @@ macro_rules! device_suite {
     () => {
         use ::llm_prof::prof::{Profile, builtin_profiles};
 
-        /// 本设备全部测试共享的只读装配；九条判据不再重复解析档案和分配三张 Vec。
         struct Fixture {
             fragments: Vec<(&'static str, &'static str)>,
             prims: Vec<(&'static str, &'static str)>,
             provides: Vec<$crate::device::Provision<'static>>,
         }
 
-        /// 档案只解析一次，其静态引用再供装配表借用，避免自引用结构。
         fn profile() -> Result<&'static Profile, String> {
             static PROFILE: ::std::sync::OnceLock<Result<Profile, String>> =
                 ::std::sync::OnceLock::new();
@@ -158,10 +125,11 @@ macro_rules! device_suite {
                     .find(|profile| profile.meta.vendor == wanted)
                     .cloned()
                     .ok_or_else(|| format!("档案里没有厂商 `{wanted}`"))
-            }).as_ref().map_err(Clone::clone)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
         }
 
-        /// 从静态档案与生成表构建一次夹具。
         fn build_fixture() -> Result<Fixture, String> {
             let profile = profile()?;
             let fragments = FRAGMENTS.iter().map(|(prim, text)| (prim.as_str(), *text)).collect();
@@ -181,17 +149,13 @@ macro_rules! device_suite {
             Ok(Fixture { fragments, prims, provides })
         }
 
-        /// 每台设备一个缓存；测试并行时 `OnceLock` 保证装配恰好一次。
         fn fixture() -> Result<&'static Fixture, String> {
             static FIXTURE: ::std::sync::OnceLock<Result<Fixture, String>> =
                 ::std::sync::OnceLock::new();
             FIXTURE.get_or_init(build_fixture).as_ref().map_err(Clone::clone)
         }
 
-        /// 在共享夹具上运行一条判据。
-        fn with_contract<T>(
-            body: impl FnOnce(&$crate::device::Contract<'_>) -> T,
-        ) -> Result<T, String> {
+        fn with_contract<T>(body: impl FnOnce(&$crate::device::Contract<'_>) -> T) -> Result<T, String> {
             let fixture = fixture()?;
             let profile = profile()?;
             Ok(body(&$crate::device::Contract {
@@ -207,7 +171,6 @@ macro_rules! device_suite {
             }))
         }
 
-        /// 断言一条判据，并保留缺陷文本。
         fn judged(
             check: impl FnOnce(&$crate::device::Contract<'_>) -> Result<(), String>,
             claim: &str,
@@ -216,7 +179,6 @@ macro_rules! device_suite {
             assert!(verdict.as_ref().is_ok_and(|inner| inner.is_ok()), "{claim}：{verdict:?}");
         }
 
-        /// 设备行与档案行必须逐项相等：五项元数据加一份入口表。
         fn row(profile: &Profile) -> Result<(), String> {
             let pairs = [
                 ("厂商键", DEVICE.vendor, profile.meta.vendor.as_str()),
@@ -262,6 +224,37 @@ macro_rules! device_suite {
         }
     };
 }
+
+// 工作区级的跨层对拍与契约门禁。它们只靠 `dev-dependencies` 里的被测层编译，所以每条都在
+// `cfg(test)` 之下——`use llm_testkit` 的运行时构建看不到其中任何一行。
+#[cfg(test)]
+mod architecture;
+#[cfg(test)]
+mod contracts;
+#[cfg(test)]
+mod e2e;
+// 三条外部 `#[path]` 用户的取值来源（`cutile` 单测、`device` 单测、`device` 的 schedule 集成
+// 测试）已在 `crates/testkit/tests/kernel.rs`：它只被那三处编译，`src/` 里不留测试夹具。
+#[cfg(test)]
+mod mirror;
+#[cfg(test)]
+mod ownership;
+// 性质测试装置的自测与生成器边界归入 `prop::configuration`。
+// 性质测试的工作区纪律与架构事实共用静态扫描缓存，归入 `architecture::discipline`。
+// L3 合成律的跨层对拍已并入 `e2e`：真实权重、网络级误差界与无损容器共享一组夹具。
+
+pub use compare::{
+    COSINE_GUARD, RelGate, Scale, all_finite, approx_eq, assert_close, assert_near,
+    assert_rel_gate, assert_rel_with, assert_vec_near, assert_within_rel, close, cosine_similarity,
+    max_rel_err, mean_rel_err, mean_rel_err_with, rel_gate,
+};
+pub use fixture::{assert_rejects_length_mismatch, pack_codes, safetensors_bytes};
+pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
+pub use hash::{assert_table_matches_bitwise, crc32_bitwise};
+pub use math::{dot, mean, variance};
+pub use rng::{Rng, sample, sample_with};
+pub use scratch::{ScratchDir, scratch_clean, scratch_dir};
+pub use similar_asserts::assert_eq;
 
 #[cfg(test)]
 mod cases {
@@ -311,35 +304,3 @@ mod cases {
         forwards_case_attributes => || assert_eq!(1, 2, "注解生效"),
     }, |case: fn()| case());
 }
-
-// 工作区级的跨层对拍与契约门禁。它们只靠 `dev-dependencies` 里的被测层编译，所以每条都在
-// `cfg(test)` 之下——`use llm_testkit` 的运行时构建看不到其中任何一行。
-#[cfg(test)]
-mod architecture;
-#[cfg(test)]
-#[cfg(test)]
-mod contracts;
-#[cfg(test)]
-mod e2e;
-// 三条外部 `#[path]` 用户的取值来源（`cutile` 单测、`device` 单测、`device` 的 schedule 集成
-// 测试）已在 `crates/testkit/tests/kernel.rs`：它只被那三处编译，`src/` 里不留测试夹具。
-#[cfg(test)]
-mod mirror;
-#[cfg(test)]
-mod ownership;
-// 性质测试装置的自测与生成器边界归入 `prop::configuration`。
-// 性质测试的工作区纪律与架构事实共用静态扫描缓存，归入 `architecture::discipline`。
-// L3 合成律的跨层对拍已并入 `e2e`：真实权重、网络级误差界与无损容器共享一组夹具。
-
-pub use compare::{
-    COSINE_GUARD, RelGate, Scale, all_finite, approx_eq, assert_close, assert_near,
-    assert_rel_gate, assert_rel_with, assert_vec_near, assert_within_rel, close, cosine_similarity,
-    max_rel_err, mean_rel_err, mean_rel_err_with, rel_gate,
-};
-pub use fixture::{assert_rejects_length_mismatch, pack_codes, safetensors_bytes};
-pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
-pub use hash::{assert_table_matches_bitwise, crc32_bitwise};
-pub use math::{dot, mean, variance};
-pub use rng::{Rng, sample, sample_with};
-pub use scratch::{ScratchDir, scratch_clean, scratch_dir};
-pub use similar_asserts::assert_eq;

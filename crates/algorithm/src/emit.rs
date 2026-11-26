@@ -39,7 +39,6 @@
 //! 本层的循环结构——本层因此可以在没有它的情况下逐字节走完，装上它就是换条件。解码侧与之对称：
 //! [`crate::Backread`] 让每个字节回读自己及更早的表示，可见集正好是本层已经收口的那些。
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

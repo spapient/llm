@@ -2,7 +2,6 @@
 
 use std::cmp::Ordering;
 
-use crate::invalid;
 use diagnostic::Result;
 use nn::conv::scan::Scalar;
 

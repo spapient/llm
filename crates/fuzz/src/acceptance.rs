@@ -1,5 +1,5 @@
 use super::*;
-use diagnostic::Code;
+use diagnostic::{Code, Error};
 use std::cell::Cell;
 
 /// 永远接受的入口。
